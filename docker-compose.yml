@@ -1,0 +1,64 @@
+services:
+  irrigation-db:
+    image: postgres:15-alpine
+    container_name: irrigation-db
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: irrigation_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  irrigation-migrations:
+    image: liquibase/liquibase:4.29
+    container_name: irrigation-migrations
+    depends_on:
+      irrigation-db:
+        condition: service_healthy
+    volumes:
+      - ./backend/migrations/changelog:/liquibase/changelog
+    command:
+      - --changelog-file=changelog/changelog-master.yaml
+      - --url=jdbc:postgresql://irrigation-db:5432/irrigation_db
+      - --username=postgres
+      - --password=password
+      - update
+
+  irrigation-backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: irrigation-backend
+    restart: always
+    ports:
+      - "3001:3001"
+    devices:
+      - "/dev/ttyACM0:/dev/ttyACM0"
+    environment:
+      - SERIAL_PORT=/dev/ttyACM0
+      - DATABASE_URL=postgres://postgres:password@irrigation-db:5432/irrigation_db
+    depends_on:
+      irrigation-migrations:
+        condition: service_completed_successfully
+
+  irrigation-dashboard:
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    container_name: irrigation-dashboard
+    restart: always
+    ports:
+      - "5173:80"
+    depends_on:
+      - irrigation-backend
+
+volumes:
+  postgres_data:

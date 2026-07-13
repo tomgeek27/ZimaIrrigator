@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "embedded"
+		},
+		{
+			"path": "backend"
+		},
+		{
+			"path": "dashboard"
+		}
+	],
+	"settings": {}
+}
