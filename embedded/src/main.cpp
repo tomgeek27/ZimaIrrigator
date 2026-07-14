@@ -12,96 +12,6 @@ unsigned long pumpStartTime[NUM_PLANTS] = {0, 0, 0, 0, 0};
 bool isPumpActive[NUM_PLANTS] = {false, false, false, false, false};
 unsigned long lastSerialRxTime = 0; // Timestamp dell'ultimo messaggio ricevuto valido
 
-// void spegniTutteLePompe()
-// {
-//   for (int i = 0; i < NUM_PLANTS; i++)
-//   {
-//     digitalWrite(RELAY_PINS[i], HIGH); // Spegni (Active HIGH)
-//     isPumpActive[i] = false;
-//   }
-// }
-
-// void setup()
-// {
-//   Serial.begin(9600);
-//   for (int i = 0; i < NUM_PLANTS; i++)
-//   {
-//     pinMode(RELAY_PINS[i], OUTPUT);
-//   }
-//   spegniTutteLePompe();
-//   lastSerialRxTime = millis(); // Inizializza il timer di comunicazione
-// }
-
-// void loop()
-// {
-//   unsigned long currentTime = millis();
-
-//   // 1. INVIO METRICHE AL SERVER
-//   Serial.print("{\"moisture\":[");
-//   for (int i = 0; i < NUM_PLANTS; i++)
-//   {
-//     int raw = analogRead(SENSOR_PINS[i]);
-//     int percent = constrain(map(raw, 800, 400, 0, 100), 0, 100);
-//     Serial.print(percent);
-//     if (i < NUM_PLANTS - 1)
-//       Serial.print(",");
-//   }
-//   Serial.println("]}");
-
-//   // 2. CONTROLLO TIMEOUT LOCALE DELLE POMPE (Protezione allagamento)
-//   for (int i = 0; i < NUM_PLANTS; i++)
-//   {
-//     if (isPumpActive[i] && (currentTime - pumpStartTime[i] >= PUMP_MAX_DURATION))
-//     {
-//       digitalWrite(RELAY_PINS[i], HIGH); // Forza lo spegnimento hardware
-//       isPumpActive[i] = false;
-//       // Opzionale: invia un log di errore al server
-//       Serial.println("{\"error\":\"TIMEOUT_POMPA_FORZATO\",\"id\":" + String(i + 1) + "}");
-//     }
-//   }
-
-//   // 3. WATCHDOG DELLA COMUNICAZIONE SERIALE (Protezione disconnessione cavo)
-//   if (currentTime - lastSerialRxTime >= SERIAL_TIMEOUT)
-//   {
-//     spegniTutteLePompe();
-//     Serial.println("{\"warning\":\"WATCHDOG_RESET_SERIAL_LOST\"}");
-//     // Non blocchiamo il loop, ma resettiamo il timer per evitare spam di log,
-//     // restando in attesa che il server si riconnetta
-//     lastSerialRxTime = currentTime;
-//   }
-
-//   // 4. GESTIONE COMANDI IN INGRESSO
-//   if (Serial.available() > 0)
-//   {
-//     String cmd = Serial.readStringUntil('\n');
-//     cmd.trim();
-
-//     // Ogni messaggio valido (anche un semplice comando "PING" vuoto dal server) resetta il Watchdog
-//     lastSerialRxTime = millis();
-
-//     if (cmd.startsWith("P") && cmd.length() >= 5)
-//     {
-//       int idx = cmd.substring(1, 2).toInt() - 1;
-//       if (idx >= 0 && idx < NUM_PLANTS)
-//       {
-//         if (cmd.endsWith("ON") && !isPumpActive[idx])
-//         {
-//           digitalWrite(RELAY_PINS[idx], LOW); // Accendi pompa
-//           isPumpActive[idx] = true;
-//           pumpStartTime[idx] = millis(); // Salva il timestamp di accensione
-//         }
-//         if (cmd.endsWith("OFF"))
-//         {
-//           digitalWrite(RELAY_PINS[idx], HIGH); // Spegni pompa
-//           isPumpActive[idx] = false;
-//         }
-//       }
-//     }
-//   }
-
-//   delay(2000);
-// }
-
 unsigned long lastSensorRead = 0;
 const unsigned long SENSOR_INTERVAL = 500;
 
@@ -109,21 +19,53 @@ void setup()
 {
   Serial.begin(115200);
   Serial.flush();
-  Serial.print(F("Sistema pronto. In attesa di comandi...\n"));
+  Serial.print(F("{\"type\":\"status\",\"message\":\"Sistema pronto. In attesa di comandi...\"}\n"));
 }
 
-void sendResponse(const __FlashStringHelper *msg)
+String escapeJson(String value)
 {
-  Serial.print(msg);
-  Serial.print('\n');
+  value.replace("\\", "\\\\");
+  value.replace("\"", "\\\"");
+  value.replace("\n", " ");
+  value.replace("\r", " ");
+  return value;
+}
+
+void sendResponse(const String &status, const String &message, int pin = -1, const String &action = "")
+{
+  Serial.print(F("{\"type\":\"command\",\"status\":\""));
+  Serial.print(escapeJson(status));
+  Serial.print(F("\",\"message\":\""));
+  Serial.print(escapeJson(message));
+
+  if (pin >= 0)
+  {
+    Serial.print(F("\",\"pin\":"));
+    Serial.print(pin);
+  }
+  else
+  {
+    Serial.print(F("\""));
+  }
+
+  if (action.length() > 0)
+  {
+    Serial.print(F(",\"action\":\""));
+    Serial.print(escapeJson(action));
+    Serial.print(F("\""));
+  }
+
+  Serial.print(F("}\n"));
   Serial.flush();
 }
 
 void readAndSendSensor()
 {
   int raw = analogRead(A0);
-  Serial.print(F("{\"id\":\"1\",\"moisture\":"));
-  Serial.print(raw);
+  int clampedRaw = constrain(raw, 250, 610);
+  int moisturePercent = map(clampedRaw, 250, 610, 100, 0);
+  Serial.print(F("{\"type\":\"telemetry\",\"id\":\"1\",\"moisture\":"));
+  Serial.print(moisturePercent);
   Serial.print(F(",\"arduino_ms\":"));
   Serial.print(millis()); // vedi il timing reale lato Arduino
   Serial.print(F("}\n"));
@@ -139,7 +81,7 @@ void processCommand(String comando)
 
   if ((firstSep <= 0) || (secondSep <= firstSep) || (comando.indexOf(':', secondSep + 1) != -1))
   {
-    sendResponse(F("ERRORE: formato non valido"));
+    sendResponse("error", "formato non valido");
     return;
   }
 
@@ -149,14 +91,14 @@ void processCommand(String comando)
 
   if (prefisso != "PUMP")
   {
-    sendResponse(F("ERRORE: prefisso non valido"));
+    sendResponse("error", "prefisso non valido");
     return;
   }
 
   int pin = pinStr.toInt();
   if (pin <= 0)
   {
-    sendResponse(F("ERRORE: pin non valido"));
+    sendResponse("error", "pin non valido", pin, azione);
     return;
   }
 
@@ -165,17 +107,16 @@ void processCommand(String comando)
   if (azione == "ON")
   {
     digitalWrite(pin, HIGH);
-    sendResponse(F("OK: pin acceso"));
+    sendResponse("ok", "pin acceso", pin, azione);
   }
   else if (azione == "OFF")
   {
     digitalWrite(pin, LOW);
-    sendResponse(F("OK: pin spento"));
+    sendResponse("ok", "pin spento", pin, azione);
   }
   else
   {
-    sendResponse(azione);
-    sendResponse(F("ERRORE: azione non valida"));
+    sendResponse("error", "azione non valida", pin, azione);
   }
 }
 
