@@ -31,6 +31,7 @@ interface Plant {
   autoStopEnabled: boolean;
   isPumpOn: boolean;
   relayPin: number;
+  cooldownUntilMs: number | null;
   stats: PlantStats;
   history: HistoryPoint[];
 }
@@ -57,6 +58,7 @@ interface BackendPlantState {
   config: BackendPlantConfig;
   currentMoisture: number;
   pumpActive: boolean;
+  cooldownUntilMs?: number | null;
 }
 
 interface BackendHistoryPoint {
@@ -117,9 +119,17 @@ function plantFromBackend(state: BackendPlantState, existing?: Plant): Plant {
     autoStopEnabled: state.config.stopEnabled,
     isPumpOn: state.pumpActive,
     relayPin: state.config.relayPin,
+    cooldownUntilMs: typeof state.cooldownUntilMs === 'number' ? state.cooldownUntilMs : null,
     stats: existing?.stats || EMPTY_STATS,
     history: existing?.history || []
   };
+}
+
+function formatCooldown(ms: number): string {
+  const totalSeconds = Math.ceil(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
 }
 
 function computeStats(history: HistoryPoint[]): PlantStats {
@@ -161,6 +171,9 @@ export default function SmartIrrigationDashboard(): React.JSX.Element {
   const selectedPlant = plants[selectedPlantId];
   const selectedOption = TIME_OPTIONS.find((option) => option.value === selectedTimeframe) || TIME_OPTIONS[3];
   const automationEnabled = selectedPlant?.autoEnabled ?? false;
+  const cooldownRemainingMs = selectedPlant?.cooldownUntilMs ? Math.max(0, selectedPlant.cooldownUntilMs - Date.now()) : 0;
+  const isCooldownActive = cooldownRemainingMs > 0;
+  const isManualStartBlocked = !!selectedPlant && !selectedPlant.isPumpOn && isCooldownActive;
 
   const addLog = useCallback((message: string, type: LogEvent['type'] = 'info'): void => {
     if (message.startsWith('Telemetria [')) return;
@@ -540,45 +553,73 @@ export default function SmartIrrigationDashboard(): React.JSX.Element {
                     <button
                       key={plant.id}
                       onClick={() => setSelectedPlantId(plant.id)}
-                      className={`flex items-center justify-between p-3.5 rounded-xl min-w-[140px] md:min-w-0 border text-left transition-all snap-start ${selectedPlantId === plant.id ? 'bg-emerald-500 text-slate-950 border-emerald-400 font-bold shadow-lg shadow-emerald-500/10' : 'bg-slate-900 border-slate-800 text-slate-300 hover:border-slate-700'
+                      className={`flex flex-col items-start justify-between gap-2 p-3.5 rounded-xl min-w-[220px] md:min-w-0 border text-left transition-all snap-start ${selectedPlantId === plant.id ? 'bg-emerald-500 text-slate-950 border-emerald-400 font-bold shadow-lg shadow-emerald-500/10' : 'bg-slate-900 border-slate-800 text-slate-300 hover:border-slate-700'
                         }`}
                     >
-                      <div>
-                        <span className="text-[9px] opacity-70 block font-mono">CH-0{plant.id}</span>
-                        <div className="flex items-baseline gap-1">
-                          <span className="text-xs font-bold block truncate">{plant.name}</span>
-                          <span className="text-[8px] text-slate-500 font-mono shrink-0">PIN:{plant.relayPin}</span>
+                      <div className="w-full space-y-1">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[9px] opacity-70 block font-mono">CH-0{plant.id}</span>
+                          <span className="text-[8px] opacity-75 font-mono shrink-0">RLY:{plant.relayPin}</span>
                         </div>
+                        <span className="text-xl font-black font-mono leading-none block">{plant.moisture}%</span>
+                        <span className="text-xs font-bold block truncate pr-1">{plant.name}</span>
                       </div>
-                      <span className="text-sm font-black font-mono">{plant.moisture}%</span>
+                      <div className="w-full flex items-center justify-start">
+                        <span className={`inline-flex items-center gap-1.5 text-[9px] font-black px-2 py-0.5 rounded-md border ${plant.isPumpOn
+                          ? 'text-rose-200 border-rose-500/60 bg-slate-900/90'
+                          : 'text-slate-200 border-slate-600/80 bg-slate-900/90'
+                          }`}>
+                          <span className={`h-1.5 w-1.5 rounded-full ${plant.isPumpOn ? 'bg-rose-300' : 'bg-slate-300'}`} />
+                          {plant.isPumpOn ? 'ON' : 'OFF'}
+                        </span>
+                      </div>
                     </button>
                   ))}
                 </div>
               </div>
 
               {/* LIVE MONITOR CARD */}
-              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex items-center justify-between shadow-sm">
-                <div>
-                  <span className="text-[10px] font-bold uppercase text-emerald-400 tracking-wider">Monitor Attivo</span>
-                  <div className="flex items-baseline gap-2">
-                    <h2 className="text-xl font-black tracking-tight">{selectedPlant.name}</h2>
-                    <span className="text-[10px] text-slate-500 font-mono">PIN:{selectedPlant.relayPin}</span>
+              <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-sm space-y-2">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <span className="text-[10px] font-bold uppercase text-emerald-400 tracking-wider">Monitor Attivo</span>
+                    <h2 className="text-xl font-black tracking-tight mt-1">{selectedPlant.name}</h2>
+                    <div className="mt-2">
+                      <span className={`inline-flex items-center gap-2 text-[12px] font-black px-3.5 py-1.5 rounded-lg border ${selectedPlant.isPumpOn
+                        ? 'text-rose-200 border-rose-500/60 bg-rose-500/25'
+                        : 'text-slate-100 border-slate-500/80 bg-slate-800/90'
+                        }`}>
+                        <span className={`h-2 w-2 rounded-full ${selectedPlant.isPumpOn ? 'bg-rose-300' : 'bg-slate-200'}`} />
+                        {selectedPlant.isPumpOn ? 'POMPA ON' : 'POMPA OFF'}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <span className="text-[10px] text-slate-500 block uppercase font-bold">Umidità</span>
+                    <span className="text-3xl font-black font-mono text-blue-400 leading-none">{selectedPlant.moisture}%</span>
                   </div>
                 </div>
-                <div className="text-right">
-                  <span className="text-[10px] text-slate-500 block uppercase font-bold">Umidità</span>
-                  <span className="text-3xl font-black font-mono text-blue-400">{selectedPlant.moisture}%</span>
+
+                <div className="grid grid-cols-2 gap-2 text-[10px] font-mono">
+                  <div className="rounded-lg border border-slate-800 bg-slate-950/50 px-2.5 py-2">
+                    <span className="text-slate-500 block">CANALE SENSORE</span>
+                    <span className="text-slate-200 font-bold">CH-0{selectedPlant.id}</span>
+                  </div>
+                  <div className="rounded-lg border border-slate-800 bg-slate-950/50 px-2.5 py-2">
+                    <span className="text-slate-500 block">PIN RELÈ</span>
+                    <span className="text-slate-200 font-bold">{selectedPlant.relayPin}</span>
+                  </div>
                 </div>
               </div>
 
               {/* RELE OVERRIDE BUTTON */}
               <button
-                disabled={automationEnabled}
+                disabled={automationEnabled || isManualStartBlocked}
                 onClick={() => {
-                  if (automationEnabled) return;
+                  if (automationEnabled || isManualStartBlocked) return;
                   void togglePumpManual(selectedPlant.id);
                 }}
-                className={`w-full py-4 rounded-xl text-xs font-black flex items-center justify-center gap-2 border transition-all tracking-wider ${automationEnabled
+                className={`w-full py-4 rounded-xl text-xs font-black flex items-center justify-center gap-2 border transition-all tracking-wider ${(automationEnabled || isManualStartBlocked)
                   ? 'bg-slate-800 text-slate-500 border-slate-700 cursor-not-allowed opacity-70'
                   : selectedPlant.isPumpOn
                     ? 'bg-rose-500/10 text-rose-400 border-rose-500/30'
@@ -588,6 +629,11 @@ export default function SmartIrrigationDashboard(): React.JSX.Element {
                 <Power size={14} />
                 {selectedPlant.isPumpOn ? "STOP RELÈ (HARDWARE OVERRIDE)" : "AVVIA RELÈ (HARDWARE OVERRIDE)"}
               </button>
+              {isCooldownActive && !automationEnabled && !selectedPlant.isPumpOn && (
+                <p className="text-[11px] font-mono text-amber-400 mt-2 px-1">
+                  Cooldown attivo: riattivazione disponibile tra {formatCooldown(cooldownRemainingMs)}
+                </p>
+              )}
             </div>
 
             {/* COLONNA DESTRA */}
