@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   Droplet, Power, Activity, RefreshCw,
-  FileText, Sliders, LayoutDashboard, Calendar
+  FileText, Sliders, Calendar
 } from 'lucide-react';
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
 
@@ -60,7 +60,7 @@ interface BackendPlantState {
 }
 
 interface BackendHistoryPoint {
-  timestamp: number;
+  timestamp: number | string;
   moisture: number;
   pumpState: number;
 }
@@ -69,11 +69,10 @@ interface BackendLogEvent {
   eventType: string;
   triggerType: string;
   message: string;
-  timestamp: number;
+  timestamp: number | string;
 }
 
 type PlantsData = Record<string, Plant>;
-type ActiveTab = 'dashboard' | 'logs';
 type TimeOption = { label: string; value: string; ms: number };
 
 const TIME_OPTIONS: TimeOption[] = [
@@ -153,7 +152,6 @@ function computeStats(history: HistoryPoint[]): PlantStats {
 
 export default function SmartIrrigationDashboard(): React.JSX.Element {
   const [plants, setPlants] = useState<PlantsData>({});
-  const [activeTab, setActiveTab] = useState<ActiveTab>('dashboard');
   const [selectedTimeframe, setSelectedTimeframe] = useState<string>('24h');
   const [pollingInterval, setPollingInterval] = useState<number>(5);
   const [selectedPlantId, setSelectedPlantId] = useState<string>('');
@@ -165,6 +163,8 @@ export default function SmartIrrigationDashboard(): React.JSX.Element {
   const automationEnabled = selectedPlant?.autoEnabled ?? false;
 
   const addLog = useCallback((message: string, type: LogEvent['type'] = 'info'): void => {
+    if (message.startsWith('Telemetria [')) return;
+
     const newLog: LogEvent = {
       id: String(Date.now()),
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
@@ -182,7 +182,7 @@ export default function SmartIrrigationDashboard(): React.JSX.Element {
       if (!response.ok) throw new Error('history fetch failed');
       const payload = (await response.json()) as BackendHistoryPoint[];
       const history: HistoryPoint[] = payload.map((point) => ({
-        timestamp: point.timestamp,
+        timestamp: Number(point.timestamp),
         moisture: point.moisture,
         pumpState: point.pumpState ? 100 : 0
       }));
@@ -308,8 +308,37 @@ export default function SmartIrrigationDashboard(): React.JSX.Element {
           return;
         }
 
-        // const incoming = payload.data || {};
-        // ...resto invariato (INIT/UPDATE)
+        const incoming = payload.data || {};
+
+        setPlants((prev) => {
+          const next: PlantsData = { ...prev };
+
+          Object.entries(incoming).forEach(([id, state]) => {
+            const existing = prev[id];
+            const mapped = plantFromBackend(state, existing);
+
+            const livePoint: HistoryPoint = {
+              timestamp: Date.now(),
+              moisture: mapped.moisture,
+              pumpState: mapped.isPumpOn ? 100 : 0
+            };
+
+            const history = [...(existing?.history || []), livePoint].slice(-800);
+
+            next[id] = {
+              ...mapped,
+              history,
+              stats: computeStats(history)
+            };
+          });
+
+          return next;
+        });
+
+        const ids = Object.keys(incoming);
+        if (ids.length > 0) {
+          setSelectedPlantId((current) => current || ids[0]);
+        }
       } catch (_err) {
         addLog('Payload WebSocket non valido.', 'error');
       }
@@ -344,7 +373,7 @@ export default function SmartIrrigationDashboard(): React.JSX.Element {
         const payload = (await response.json()) as BackendLogEvent[];
         const mapped: LogEvent[] = payload.map((event, index) => ({
           id: `${event.timestamp}-${index}`,
-          timestamp: new Date(event.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+          timestamp: new Date(Number(event.timestamp)).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
           message: `[${event.triggerType}] ${event.message}`,
           type: toLogType(event.eventType)
         }));
@@ -369,7 +398,8 @@ export default function SmartIrrigationDashboard(): React.JSX.Element {
         moistureMax: plant.maxThreshold,
         autoEnabled: plant.autoEnabled,
         startEnabled: plant.autoStartEnabled,
-        stopEnabled: plant.autoStopEnabled
+        stopEnabled: plant.autoStopEnabled,
+        relayPin: plant.relayPin
       };
 
       const response = await fetch(`${API_BASE_URL}/config`, {
@@ -464,23 +494,6 @@ export default function SmartIrrigationDashboard(): React.JSX.Element {
             <Droplet className="text-emerald-400 fill-emerald-400/20" size={22} />
             <h1 className="text-lg font-black text-emerald-400 tracking-tight">ZimaIrrigation</h1>
           </div>
-
-          <nav className="space-y-1.5">
-            <button
-              onClick={() => setActiveTab('dashboard')}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-bold transition-all ${activeTab === 'dashboard' ? 'bg-emerald-500 text-slate-950' : 'text-slate-400 hover:bg-slate-800/50'}`}
-            >
-              <LayoutDashboard size={16} />
-              DASHBOARD
-            </button>
-            <button
-              onClick={() => setActiveTab('logs')}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-bold transition-all ${activeTab === 'logs' ? 'bg-emerald-500 text-slate-950' : 'text-slate-400 hover:bg-slate-800/50'}`}
-            >
-              <FileText size={16} />
-              LOG DI SISTEMA
-            </button>
-          </nav>
         </div>
 
         <div className="bg-slate-950/50 border border-slate-800 p-3 rounded-xl flex items-center justify-between text-[11px] font-mono">
@@ -511,9 +524,9 @@ export default function SmartIrrigationDashboard(): React.JSX.Element {
       </header>
 
       {/* CONTENUTORE PRINCIPALE */}
-      <main className="flex-1 p-4 lg:p-8 max-w-7xl mx-auto w-full space-y-6 pb-24 md:pb-8 overflow-y-auto">
+      <main className="flex-1 p-4 lg:p-8 max-w-7xl mx-auto w-full space-y-6 pb-8 overflow-y-auto">
 
-        {activeTab === 'dashboard' && selectedPlant && (
+        {selectedPlant && (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
 
             {/* COLONNA SINISTRA */}
@@ -560,8 +573,16 @@ export default function SmartIrrigationDashboard(): React.JSX.Element {
 
               {/* RELE OVERRIDE BUTTON */}
               <button
-                onClick={() => { void togglePumpManual(selectedPlant.id); }}
-                className={`w-full py-4 rounded-xl text-xs font-black flex items-center justify-center gap-2 border transition-all tracking-wider ${selectedPlant.isPumpOn ? 'bg-rose-500/10 text-rose-400 border-rose-500/30' : 'bg-blue-500 text-slate-950 border-blue-400 shadow-md shadow-blue-500/10 hover:bg-blue-400'
+                disabled={automationEnabled}
+                onClick={() => {
+                  if (automationEnabled) return;
+                  void togglePumpManual(selectedPlant.id);
+                }}
+                className={`w-full py-4 rounded-xl text-xs font-black flex items-center justify-center gap-2 border transition-all tracking-wider ${automationEnabled
+                  ? 'bg-slate-800 text-slate-500 border-slate-700 cursor-not-allowed opacity-70'
+                  : selectedPlant.isPumpOn
+                    ? 'bg-rose-500/10 text-rose-400 border-rose-500/30'
+                    : 'bg-blue-500 text-slate-950 border-blue-400 shadow-md shadow-blue-500/10 hover:bg-blue-400'
                   }`}
               >
                 <Power size={14} />
@@ -603,7 +624,7 @@ export default function SmartIrrigationDashboard(): React.JSX.Element {
                     <div className="flex justify-between items-center gap-3">
                       <input
                         type="range"
-                        min="15"
+                        min="1"
                         max="49"
                         value={selectedPlant.minThreshold}
                         onChange={(e) => updatePlant(selectedPlant.id, { minThreshold: parseInt(e.target.value, 10) || 0 })}
@@ -621,7 +642,7 @@ export default function SmartIrrigationDashboard(): React.JSX.Element {
                       <input
                         type="range"
                         min="50"
-                        max="85"
+                        max="99"
                         value={selectedPlant.maxThreshold}
                         onChange={(e) => updatePlant(selectedPlant.id, { maxThreshold: parseInt(e.target.value, 10) || 0 })}
                         onMouseUp={persistSelectedConfig}
@@ -707,37 +728,23 @@ export default function SmartIrrigationDashboard(): React.JSX.Element {
         )}
 
         {/* PANNELLO LOG DI SISTEMA */}
-        {activeTab === 'logs' && (
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4 min-h-[60vh] flex flex-col shadow-sm">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-              <h2 className="text-xs font-black uppercase text-slate-300 tracking-wider flex items-center gap-2">
-                <FileText size={16} className="text-emerald-400" /> Registro Eventi Hardware & Automazioni
-              </h2>
-            </div>
-            <div className="flex-1 overflow-y-auto space-y-2 text-[11px] font-mono pr-1">
-              {logs.map((log) => (
-                <div key={log.id} className="p-2.5 bg-slate-950/40 rounded-lg border border-slate-950/60 flex gap-2.5">
-                  <span className="text-slate-600 shrink-0">[{log.timestamp}]</span>
-                  <span className={log.type === 'warning' ? 'text-amber-400' : 'text-slate-300'}>{log.message}</span>
-                </div>
-              ))}
-            </div>
+        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-4 min-h-[35vh] flex flex-col shadow-sm">
+          <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+            <h2 className="text-xs font-black uppercase text-slate-300 tracking-wider flex items-center gap-2">
+              <FileText size={16} className="text-emerald-400" /> Registro Eventi Hardware & Automazioni
+            </h2>
           </div>
-        )}
+          <div className="flex-1 overflow-y-auto space-y-2 text-[11px] font-mono pr-1 max-h-[42vh]">
+            {logs.map((log) => (
+              <div key={log.id} className="p-2.5 bg-slate-950/40 rounded-lg border border-slate-950/60 flex gap-2.5">
+                <span className="text-slate-600 shrink-0">[{log.timestamp}]</span>
+                <span className={log.type === 'error' ? 'text-rose-400' : log.type === 'warning' ? 'text-amber-400' : 'text-slate-300'}>{log.message}</span>
+              </div>
+            ))}
+          </div>
+        </div>
 
       </main>
-
-      {/* BOTTOM TAB BAR (Mobile Only) */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-slate-900/90 backdrop-blur-md border-t border-slate-800 px-6 py-2.5 flex justify-around rounded-t-2xl shadow-xl">
-        <button onClick={() => setActiveTab('dashboard')} className={`flex flex-col items-center gap-1 py-1 ${activeTab === 'dashboard' ? 'text-emerald-400 font-bold' : 'text-slate-500'}`}>
-          <LayoutDashboard size={20} />
-          <span className="text-[9px] uppercase tracking-wider">Dashboard</span>
-        </button>
-        <button onClick={() => setActiveTab('logs')} className={`flex flex-col items-center gap-1 py-1 ${activeTab === 'logs' ? 'text-emerald-400 font-bold' : 'text-slate-500'}`}>
-          <FileText size={20} />
-          <span className="text-[9px] uppercase tracking-wider">Logs</span>
-        </button>
-      </nav>
 
     </div>
   );
