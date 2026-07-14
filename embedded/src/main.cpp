@@ -5,8 +5,8 @@ const int RELAY_PINS[] = {2, 3, 4, 5, 6};
 const int NUM_PLANTS = 5;
 
 // --- CONFIGURAZIONE SICUREZZA ---
-const unsigned long PUMP_MAX_DURATION = 8000; // Massimo 8 secondi di irrigazione continua consentiti
-const unsigned long SERIAL_TIMEOUT = 10000;   // Se non riceve dati per 10 secondi, va in blocco
+const unsigned long MAX_PUMP_RUNTIME_MS = 5000; // Massimo runtime continuo pompa consentito
+const unsigned long SERIAL_TIMEOUT = 10000;     // Se non riceve dati per 10 secondi, va in blocco
 
 unsigned long pumpStartTime[NUM_PLANTS] = {0, 0, 0, 0, 0};
 bool isPumpActive[NUM_PLANTS] = {false, false, false, false, false};
@@ -15,9 +15,48 @@ unsigned long lastSerialRxTime = 0; // Timestamp dell'ultimo messaggio ricevuto 
 unsigned long lastSensorRead = 0;
 const unsigned long SENSOR_INTERVAL = 500;
 
+String escapeJson(String value);
+
+int relayIndexFromPin(int pin)
+{
+  for (int i = 0; i < NUM_PLANTS; i++)
+  {
+    if (RELAY_PINS[i] == pin)
+      return i;
+  }
+  return -1;
+}
+
+void forcePumpOffWithReason(int pin, const String &reason)
+{
+  int idx = relayIndexFromPin(pin);
+  if (idx < 0)
+    return;
+
+  digitalWrite(pin, LOW);
+  isPumpActive[idx] = false;
+  pumpStartTime[idx] = 0;
+
+  Serial.print(F("{\"type\":\"SAFETY_STOP\",\"pin\":"));
+  Serial.print(pin);
+  Serial.print(F(",\"reason\":\""));
+  Serial.print(escapeJson(reason));
+  Serial.print(F("\"}\n"));
+  Serial.flush();
+}
+
 void setup()
 {
   Serial.begin(115200);
+
+  for (int i = 0; i < NUM_PLANTS; i++)
+  {
+    pinMode(RELAY_PINS[i], OUTPUT);
+    digitalWrite(RELAY_PINS[i], LOW);
+    isPumpActive[i] = false;
+    pumpStartTime[i] = 0;
+  }
+
   Serial.flush();
   Serial.print(F("{\"type\":\"status\",\"message\":\"Sistema pronto. In attesa di comandi...\"}\n"));
 }
@@ -96,22 +135,25 @@ void processCommand(String comando)
   }
 
   int pin = pinStr.toInt();
-  if (pin <= 0)
+  int relayIdx = relayIndexFromPin(pin);
+  if (relayIdx < 0)
   {
     sendResponse("error", "pin non valido", pin, azione);
     return;
   }
 
-  pinMode(pin, OUTPUT);
-
   if (azione == "ON")
   {
     digitalWrite(pin, HIGH);
+    isPumpActive[relayIdx] = true;
+    pumpStartTime[relayIdx] = millis();
     sendResponse("ok", "pin acceso", pin, azione);
   }
   else if (azione == "OFF")
   {
     digitalWrite(pin, LOW);
+    isPumpActive[relayIdx] = false;
+    pumpStartTime[relayIdx] = 0;
     sendResponse("ok", "pin spento", pin, azione);
   }
   else
@@ -123,6 +165,17 @@ void processCommand(String comando)
 void loop()
 {
   unsigned long now = millis();
+
+  for (int i = 0; i < NUM_PLANTS; i++)
+  {
+    if (!isPumpActive[i])
+      continue;
+
+    if (now - pumpStartTime[i] >= MAX_PUMP_RUNTIME_MS)
+    {
+      forcePumpOffWithReason(RELAY_PINS[i], "max_runtime_exceeded");
+    }
+  }
 
   // Lettura sensore non bloccante ogni 500ms
   if (now - lastSensorRead >= SENSOR_INTERVAL)
