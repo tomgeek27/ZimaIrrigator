@@ -1,6 +1,6 @@
 import type { WebSocket } from 'ws';
 import type { LogLevel } from './types.ts';
-import { plantsCache } from './state.ts';
+import { getPlantsSnapshot } from './state.ts';
 
 const clients = new Set<WebSocket>();
 
@@ -19,7 +19,7 @@ function broadcast(payload: unknown): void {
 }
 
 export function broadcastUpdate(customData?: unknown): void {
-  broadcast({ type: 'UPDATE', data: customData ?? plantsCache });
+  broadcast({ type: 'UPDATE', data: customData ?? getPlantsSnapshot() });
 }
 
 export function broadcastLog(message: string, level: LogLevel = 'info'): void {

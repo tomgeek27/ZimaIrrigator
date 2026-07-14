@@ -1,7 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { plantsCache } from '../state.ts';
-import { sendSerialCommand } from '../serial.ts';
-import { insertIrrigationLog } from '../db/queries.ts';
+import { setPumpState } from '../pumpActions.ts';
 import { broadcastUpdate } from '../broadcast.ts';
 
 const pumpBodySchema = {
@@ -22,18 +21,23 @@ export async function pumpRoutes(fastify: FastifyInstance) {
       return reply.code(404).send({ error: `Pianta non trovata per relayPin=${relayPin}` });
     }
 
-    plant.pumpActive = active === 'ON';
     console.log(`[API /pump] comando manuale: plant=${plant.config.id}, relayPin=${relayPin}, active=${active}`);
 
-    sendSerialCommand(relayPin, active);
+    const wasActive = plant.pumpActive;
 
-    await insertIrrigationLog(
-      plant.config.id,
-      plant.pumpActive ? 'PUMP_ON' : 'PUMP_OFF',
+    const changed = await setPumpState(
+      plant,
+      active === 'ON',
       'MANUAL',
       `Override manuale relè -> ${active}`,
       Date.now()
     );
+
+    if (active === 'ON' && !wasActive && !changed) {
+      return reply.code(429).send({
+        error: 'Accensione bloccata da sicurezza (cooldown attivo o vincolo safety)',
+      });
+    }
 
     broadcastUpdate();
     return { success: true };

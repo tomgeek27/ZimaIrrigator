@@ -1,7 +1,11 @@
 import { execSync } from 'child_process';
 import { SerialPort } from 'serialport';
 import { ReadlineParser } from '@serialport/parser-readline';
-import { broadcastLog } from './broadcast.ts';
+import { broadcastLog, broadcastUpdate } from './broadcast.ts';
+import { plantsCache } from './state.ts';
+import { insertIrrigationLog } from './db/queries.ts';
+import { clearSafetyTimer } from './pumpSafety.ts';
+import { markCooldownLock } from './pumpSafety.ts';
 
 const ARDUINO_PORT = process.env.SERIAL_PORT || '/dev/ttyACM0';
 
@@ -28,7 +32,13 @@ interface StatusMessage {
   message: string;
 }
 
-type ArduinoMessage = TelemetryMessage | CommandMessage | StatusMessage;
+interface SafetyStopMessage {
+  type: 'SAFETY_STOP';
+  pin: number;
+  reason: string;
+}
+
+type ArduinoMessage = TelemetryMessage | CommandMessage | StatusMessage | SafetyStopMessage;
 
 function isTelemetryMessage(msg: any): msg is TelemetryMessage {
   return (
@@ -84,6 +94,19 @@ export function connectSerial(onTelemetry: (plantId: string, moisture: number) =
         } else {
           console.log('[SERIAL] Buffer svuotato');
           broadcastLog('Connessione Arduino stabilita, buffer svuotato.', 'info');
+
+          const seenRelayPins = new Set<number>();
+          for (const plant of Object.values(plantsCache)) {
+            const relayPin = plant.config.relayPin;
+            if (seenRelayPins.has(relayPin)) continue;
+
+            seenRelayPins.add(relayPin);
+            plant.pumpActive = false;
+            sendSerialCommand(relayPin, 'OFF');
+            broadcastLog(`[SERIAL SYNC] relè ${relayPin} forzato OFF alla connessione`, 'warning');
+          }
+
+          broadcastUpdate();
         }
         setTimeout(() => port!.write(`TIME:${Math.floor(Date.now() / 1000)}\n`), 500);
       });
@@ -126,6 +149,29 @@ export function connectSerial(onTelemetry: (plantId: string, moisture: number) =
       if (parsed.type === 'status') {
         console.log(`[ARDUINO] ${JSON.stringify(parsed)}`);
         broadcastLog(`[ARDUINO STATUS] ${parsed.message}`, 'info');
+        return;
+      }
+
+      if (parsed.type === 'SAFETY_STOP') {
+        const plant = Object.values(plantsCache).find((item) => item.config.relayPin === parsed.pin);
+        if (plant) {
+          plant.pumpActive = false;
+          clearSafetyTimer(plant.config.id);
+          markCooldownLock(plant.config.id, Date.now());
+          await insertIrrigationLog(
+            plant.config.id,
+            'PUMP_OFF',
+            'SAFETY',
+            `Firmware safety stop: ${parsed.reason}`,
+            Date.now()
+          );
+          broadcastUpdate();
+        }
+
+        broadcastLog(
+          `[ARDUINO SAFETY] pin=${parsed.pin} reason=${parsed.reason}`,
+          'warning'
+        );
         return;
       }
 

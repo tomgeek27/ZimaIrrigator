@@ -6,3 +6,6 @@ databaseChangeLog:
   - include:
       file: changesets/0002-add-relay-pin.yaml
       relativeToChangelogFile: true
+  - include:
+      file: changesets/0003-add-max-pump-runtime.yaml
+      relativeToChangelogFile: true

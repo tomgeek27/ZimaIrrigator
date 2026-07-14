@@ -18,6 +18,7 @@ const configBodySchema = {
     startEnabled: { type: 'boolean' },
     stopEnabled: { type: 'boolean' },
     relayPin: { type: 'number' },
+    maxPumpRuntimeMs: { type: 'number' },
   },
 };
 
@@ -34,11 +35,16 @@ export async function configRoutes(fastify: FastifyInstance) {
       ...plant.config,
       ...body,
       relayPin: Number(body.relayPin ?? plant.config.relayPin),
+      maxPumpRuntimeMs: Number(body.maxPumpRuntimeMs ?? plant.config.maxPumpRuntimeMs),
     };
     const wasAutoEnabled = plant.config.autoEnabled;
 
     if (!Number.isFinite(nextConfig.relayPin)) {
       return reply.code(400).send({ error: 'relayPin non valido' });
+    }
+
+    if (!Number.isFinite(nextConfig.maxPumpRuntimeMs) || nextConfig.maxPumpRuntimeMs <= 0) {
+      return reply.code(400).send({ error: 'maxPumpRuntimeMs non valido' });
     }
 
     await updatePlantConfig(nextConfig);

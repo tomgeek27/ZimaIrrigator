@@ -1,0 +1,14 @@
+databaseChangeLog:
+  - changeSet:
+      id: 0003-add-max-pump-runtime
+      author: irrigation-system
+      changes:
+        - addColumn:
+            tableName: plant_config
+            columns:
+              - column:
+                  name: max_pump_runtime_ms
+                  type: BIGINT
+                  defaultValueNumeric: 5000
+                  constraints:
+                    nullable: false

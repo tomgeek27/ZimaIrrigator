@@ -7,6 +7,7 @@ export interface PlantConfig {
   startEnabled: boolean;
   stopEnabled: boolean;
   relayPin: number;
+  maxPumpRuntimeMs: number;
 }
 
 export interface PlantState {
@@ -16,7 +17,7 @@ export interface PlantState {
 }
 
 export type LogLevel = 'info' | 'warning' | 'error';
-export type TriggerType = 'MANUAL' | 'AUTOMATIC';
+export type TriggerType = 'MANUAL' | 'AUTOMATIC' | 'SAFETY';
 export type EventType = 'PUMP_ON' | 'PUMP_OFF';
 
 export interface PumpDecision {
