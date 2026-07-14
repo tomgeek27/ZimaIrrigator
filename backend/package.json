@@ -4,12 +4,13 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "start": "node --loader ts-node/esm src/index.ts",
-    "dev": "node --watch --loader ts-node/esm src/index.ts",
+    "start": "node --loader ts-node/esm src/server.ts",
+    "dev": "node --watch --loader ts-node/esm src/server.ts",
     "check": "tsc --noEmit"
   },
   "devDependencies": {
-    "@types/node": "^26.0.1"
+    "@types/node": "^26.0.1",
+    "@types/ws": "^8.18.1"
   },
   "peerDependencies": {
     "typescript": "^5"
