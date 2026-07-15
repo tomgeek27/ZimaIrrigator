@@ -3,6 +3,3 @@ databaseChangeLog:
   - include:
       file: changesets/0001-init.yaml
       relativeToChangelogFile: true
-  - include:
-      file: changesets/0002-add-relay-pin.yaml
-      relativeToChangelogFile: true
