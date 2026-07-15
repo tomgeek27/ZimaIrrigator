@@ -1,9 +1,8 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
-  Droplet, Power, Activity, RefreshCw,
-  FileText, Sliders, Calendar
+  Droplet, Power, RefreshCw,
+  FileText, Sliders
 } from 'lucide-react';
-import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined) || '/api';
 
@@ -27,11 +26,8 @@ interface Plant {
   minThreshold: number;
   maxThreshold: number;
   autoEnabled: boolean;
-  autoStartEnabled: boolean;
-  autoStopEnabled: boolean;
   isPumpOn: boolean;
   relayPin: number;
-  cooldownUntilMs: number | null;
   stats: PlantStats;
   history: HistoryPoint[];
 }
@@ -49,8 +45,6 @@ interface BackendPlantConfig {
   moistureMin: number;
   moistureMax: number;
   autoEnabled: boolean;
-  startEnabled: boolean;
-  stopEnabled: boolean;
   relayPin: number;
 }
 
@@ -58,7 +52,20 @@ interface BackendPlantState {
   config: BackendPlantConfig;
   currentMoisture: number;
   pumpActive: boolean;
-  cooldownUntilMs?: number | null;
+}
+
+interface IncomingBackendPlantState {
+  config?: Partial<BackendPlantConfig> & {
+    moisture_min?: number;
+    moisture_max?: number;
+    auto_enabled?: boolean;
+    relay_pin?: number;
+  };
+  currentMoisture?: number;
+  current_moisture?: number;
+  moisture?: number;
+  pumpActive?: boolean;
+  pump_active?: boolean;
 }
 
 interface BackendHistoryPoint {
@@ -75,19 +82,6 @@ interface BackendLogEvent {
 }
 
 type PlantsData = Record<string, Plant>;
-type TimeOption = { label: string; value: string; ms: number };
-
-const TIME_OPTIONS: TimeOption[] = [
-  { label: 'Ultimi 5 min', value: '5m', ms: 5 * 60 * 1000 },
-  { label: 'Ultimi 15 min', value: '15m', ms: 15 * 60 * 1000 },
-  { label: 'Ultimi 30 min', value: '30m', ms: 30 * 60 * 1000 },
-  { label: 'Ultima ora', value: '1h', ms: 60 * 60 * 1000 },
-  { label: 'Ultime 12 ore', value: '12h', ms: 12 * 60 * 60 * 1000 },
-  { label: 'Ultime 24 ore', value: '24h', ms: 24 * 60 * 60 * 1000 },
-  { label: 'Ultimi 3 giorni', value: '3d', ms: 3 * 24 * 60 * 60 * 1000 },
-  { label: 'Ultimi 7 giorni', value: '7d', ms: 7 * 24 * 60 * 60 * 1000 },
-];
-
 const EMPTY_STATS: PlantStats = {
   litersDelivered: 0,
   activations: 0,
@@ -107,29 +101,24 @@ function toLogType(eventType: string): LogEvent['type'] {
   return 'info';
 }
 
-function plantFromBackend(state: BackendPlantState, existing?: Plant): Plant {
+function plantFromBackend(state: IncomingBackendPlantState, existing?: Plant): Plant {
+  const rawConfig = state.config || {};
+  const moisture = Number(
+    state.currentMoisture ?? state.current_moisture ?? state.moisture ?? existing?.moisture ?? 0
+  );
+
   return {
-    id: state.config.id,
-    name: state.config.name,
-    moisture: state.currentMoisture,
-    minThreshold: state.config.moistureMin,
-    maxThreshold: state.config.moistureMax,
-    autoEnabled: state.config.autoEnabled,
-    autoStartEnabled: state.config.startEnabled,
-    autoStopEnabled: state.config.stopEnabled,
-    isPumpOn: state.pumpActive,
-    relayPin: state.config.relayPin,
-    cooldownUntilMs: typeof state.cooldownUntilMs === 'number' ? state.cooldownUntilMs : null,
+    id: String(rawConfig.id ?? existing?.id ?? ''),
+    name: rawConfig.name ?? existing?.name ?? 'Plant',
+    moisture,
+    minThreshold: Number(rawConfig.moistureMin ?? rawConfig.moisture_min ?? existing?.minThreshold ?? 0),
+    maxThreshold: Number(rawConfig.moistureMax ?? rawConfig.moisture_max ?? existing?.maxThreshold ?? 100),
+    autoEnabled: Boolean(rawConfig.autoEnabled ?? rawConfig.auto_enabled ?? existing?.autoEnabled ?? false),
+    isPumpOn: Boolean(state.pumpActive ?? state.pump_active ?? existing?.isPumpOn ?? false),
+    relayPin: Number(rawConfig.relayPin ?? rawConfig.relay_pin ?? existing?.relayPin ?? 0),
     stats: existing?.stats || EMPTY_STATS,
     history: existing?.history || []
   };
-}
-
-function formatCooldown(ms: number): string {
-  const totalSeconds = Math.ceil(ms / 1000);
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
 }
 
 function computeStats(history: HistoryPoint[]): PlantStats {
@@ -162,18 +151,20 @@ function computeStats(history: HistoryPoint[]): PlantStats {
 
 export default function SmartIrrigationDashboard(): React.JSX.Element {
   const [plants, setPlants] = useState<PlantsData>({});
-  const [selectedTimeframe, setSelectedTimeframe] = useState<string>('24h');
+  const selectedTimeframe = '24h';
   const [pollingInterval, setPollingInterval] = useState<number>(5);
   const [selectedPlantId, setSelectedPlantId] = useState<string>('');
-  const [currentTimeWindow, setCurrentTimeWindow] = useState<{ min: number; max: number }>({ min: 0, max: 0 });
   const [logs, setLogs] = useState<LogEvent[]>([]);
+  const [lastWsUpdateAt, setLastWsUpdateAt] = useState<number | null>(null);
+  const [nowTs, setNowTs] = useState<number>(Date.now());
 
   const selectedPlant = plants[selectedPlantId];
-  const selectedOption = TIME_OPTIONS.find((option) => option.value === selectedTimeframe) || TIME_OPTIONS[3];
   const automationEnabled = selectedPlant?.autoEnabled ?? false;
-  const cooldownRemainingMs = selectedPlant?.cooldownUntilMs ? Math.max(0, selectedPlant.cooldownUntilMs - Date.now()) : 0;
-  const isCooldownActive = cooldownRemainingMs > 0;
-  const isManualStartBlocked = !!selectedPlant && !selectedPlant.isPumpOn && isCooldownActive;
+  const msSinceLastUpdate = lastWsUpdateAt ? nowTs - lastWsUpdateAt : Number.POSITIVE_INFINITY;
+  const isDataLive = msSinceLastUpdate <= Math.max(10_000, pollingInterval * 3000);
+  const lastUpdateLabel = lastWsUpdateAt
+    ? new Date(lastWsUpdateAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    : 'mai';
 
   const addLog = useCallback((message: string, type: LogEvent['type'] = 'info'): void => {
     if (message.startsWith('Telemetria [')) return;
@@ -245,18 +236,6 @@ export default function SmartIrrigationDashboard(): React.JSX.Element {
     void loadPlants();
   }, [addLog]);
 
-  useEffect(() => {
-    const updateWindow = () => {
-      const max = Date.now();
-      const min = max - selectedOption.ms;
-      setCurrentTimeWindow({ min, max });
-    };
-
-    updateWindow();
-    const interval = setInterval(updateWindow, 1000);
-    return () => clearInterval(interval);
-  }, [selectedOption.ms]);
-
   // useEffect(() => {
   //   const socket = new WebSocket(wsUrl);
 
@@ -303,66 +282,92 @@ export default function SmartIrrigationDashboard(): React.JSX.Element {
   // }, [addLog, selectedPlantId]);
 
   useEffect(() => {
+    const interval = setInterval(() => setNowTs(Date.now()), 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
     let isCancelled = false;
-    const socket = new WebSocket(wsUrl);
+    let closedByCleanup = false;
+    let socket: WebSocket | null = null;
 
-    socket.onopen = () => {
-      if (isCancelled) socket.close(); // StrictMode: se già smontato, chiudi subito senza allarmare
-    };
+    // In React StrictMode (dev), effects mount/unmount twice. Deferring socket creation
+    // avoids opening a connection that would be immediately closed during the first cleanup.
+    const connectTimer = window.setTimeout(() => {
+      if (isCancelled) return;
+      socket = new WebSocket(wsUrl);
 
-    socket.onmessage = (event) => {
-      try {
-        const payload = JSON.parse(event.data) as
-          | { type: 'INIT' | 'UPDATE'; data: Record<string, BackendPlantState> }
-          | { type: 'LOG'; data: { message: string; level: 'info' | 'warning' | 'error'; timestamp: number } };
+      socket.onopen = () => {
+        console.log(`[WS] connected to ${wsUrl}`);
+      };
 
-        if (payload.type === 'LOG') {
-          addLog(payload.data.message, payload.data.level);
-          return;
-        }
+      socket.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(event.data) as
+            | { type: 'INIT' | 'UPDATE'; data: Record<string, IncomingBackendPlantState> }
+            | { type: 'LOG'; data: { message: string; level: 'info' | 'warning' | 'error'; timestamp: number } };
 
-        const incoming = payload.data || {};
+          if (payload.type === 'LOG') {
+            addLog(payload.data.message, payload.data.level);
+            return;
+          }
 
-        setPlants((prev) => {
-          const next: PlantsData = { ...prev };
+          const incoming = payload.data || {};
+          setLastWsUpdateAt(Date.now());
+          console.log(`[WS] ${payload.type} received`, Object.keys(incoming));
 
-          Object.entries(incoming).forEach(([id, state]) => {
-            const existing = prev[id];
-            const mapped = plantFromBackend(state, existing);
+          setPlants((prev) => {
+            const next: PlantsData = { ...prev };
 
-            const livePoint: HistoryPoint = {
-              timestamp: Date.now(),
-              moisture: mapped.moisture,
-              pumpState: mapped.isPumpOn ? 100 : 0
-            };
+            Object.entries(incoming).forEach(([id, state]) => {
+              const existing = prev[id];
+              const mapped = plantFromBackend(state, existing);
 
-            const history = [...(existing?.history || []), livePoint].slice(-800);
+              const livePoint: HistoryPoint = {
+                timestamp: Date.now(),
+                moisture: mapped.moisture,
+                pumpState: mapped.isPumpOn ? 100 : 0
+              };
 
-            next[id] = {
-              ...mapped,
-              history,
-              stats: computeStats(history)
-            };
+              const history = [...(existing?.history || []), livePoint].slice(-800);
+
+              console.log(`[WS] plant ${id} moisture ${existing?.moisture ?? 'n/a'} -> ${mapped.moisture}`, state);
+
+              next[id] = {
+                ...mapped,
+                history,
+                stats: computeStats(history)
+              };
+            });
+
+            return next;
           });
 
-          return next;
-        });
-
-        const ids = Object.keys(incoming);
-        if (ids.length > 0) {
-          setSelectedPlantId((current) => current || ids[0]);
+          const ids = Object.keys(incoming);
+          if (ids.length > 0) {
+            setSelectedPlantId((current) => current || ids[0]);
+          }
+        } catch (_err) {
+          addLog('Payload WebSocket non valido.', 'error');
         }
-      } catch (_err) {
-        addLog('Payload WebSocket non valido.', 'error');
-      }
-    };
-    socket.onerror = () => {
-      if (!isCancelled) addLog('Connessione WebSocket non disponibile.', 'warning');
-    };
+      };
+      socket.onerror = () => {
+        if (isCancelled || closedByCleanup) return;
+        addLog('Connessione WebSocket non disponibile.', 'warning');
+        console.error('[WS] socket error');
+      };
+
+      socket.onclose = () => {
+        if (isCancelled || closedByCleanup) return;
+        console.warn('[WS] socket closed');
+      };
+    }, 0);
 
     return () => {
       isCancelled = true;
-      socket.close();
+      closedByCleanup = true;
+      window.clearTimeout(connectTimer);
+      if (socket) socket.close();
     };
   }, []); // <-- nessuna dipendenza: il socket vive per tutta la vita del componente
 
@@ -410,8 +415,6 @@ export default function SmartIrrigationDashboard(): React.JSX.Element {
         moistureMin: plant.minThreshold,
         moistureMax: plant.maxThreshold,
         autoEnabled: plant.autoEnabled,
-        startEnabled: plant.autoStartEnabled,
-        stopEnabled: plant.autoStopEnabled,
         relayPin: plant.relayPin
       };
 
@@ -466,35 +469,6 @@ export default function SmartIrrigationDashboard(): React.JSX.Element {
       updatePlant(id, { isPumpOn: !nextState });
       addLog(`Errore comando pompa per ${plant.name}.`, 'error');
     }
-  };
-
-  const filteredHistory = useMemo(() => {
-    if (!selectedPlant) return [];
-    return selectedPlant.history.filter(point => point.timestamp >= currentTimeWindow.min);
-  }, [selectedPlant, currentTimeWindow.min]);
-
-  const formatXAxis = (tickItem: number) => {
-    const date = new Date(tickItem);
-    if (selectedOption.ms > 24 * 60 * 60 * 1000) {
-      return date.toLocaleDateString([], { day: '2-digit', month: '2-digit' }) + ' ' + date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    }
-    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-  };
-
-  const CustomTooltip = ({ active, payload }: any) => {
-    if (active && payload && payload.length) {
-      const date = new Date(payload[0].payload.timestamp);
-      return (
-        <div className="bg-slate-900 border border-slate-800 p-2 rounded-xl text-[11px] font-mono shadow-xl">
-          <p className="text-slate-500 mb-1 font-bold">Data: {date.toLocaleString()}</p>
-          <p className="text-blue-400">Umidità: <span className="font-bold text-slate-100">{payload[0].value}%</span></p>
-          <p className="text-emerald-400">
-            Pompa: <span className="font-bold text-slate-100">{payload[1]?.value === 100 ? 'ON' : 'OFF'}</span>
-          </p>
-        </div>
-      );
-    }
-    return null;
   };
 
   return (
@@ -585,6 +559,15 @@ export default function SmartIrrigationDashboard(): React.JSX.Element {
                     <span className="text-[10px] font-bold uppercase text-emerald-400 tracking-wider">Monitor Attivo</span>
                     <h2 className="text-xl font-black tracking-tight mt-1">{selectedPlant.name}</h2>
                     <div className="mt-2">
+                      <span className={`inline-flex items-center gap-1.5 text-[10px] font-mono px-2.5 py-1 rounded-md border ${isDataLive
+                        ? 'text-emerald-200 border-emerald-500/40 bg-emerald-500/10'
+                        : 'text-amber-200 border-amber-500/40 bg-amber-500/10'
+                        }`}>
+                        <span className={`h-1.5 w-1.5 rounded-full ${isDataLive ? 'bg-emerald-300' : 'bg-amber-300'}`} />
+                        {isDataLive ? 'LIVE' : 'STALE'} • ultimo update: {lastUpdateLabel}
+                      </span>
+                    </div>
+                    <div className="mt-2">
                       <span className={`inline-flex items-center gap-2 text-[12px] font-black px-3.5 py-1.5 rounded-lg border ${selectedPlant.isPumpOn
                         ? 'text-rose-200 border-rose-500/60 bg-rose-500/25'
                         : 'text-slate-100 border-slate-500/80 bg-slate-800/90'
@@ -614,12 +597,12 @@ export default function SmartIrrigationDashboard(): React.JSX.Element {
 
               {/* RELE OVERRIDE BUTTON */}
               <button
-                disabled={automationEnabled || isManualStartBlocked}
+                disabled={automationEnabled}
                 onClick={() => {
-                  if (automationEnabled || isManualStartBlocked) return;
+                  if (automationEnabled) return;
                   void togglePumpManual(selectedPlant.id);
                 }}
-                className={`w-full py-4 rounded-xl text-xs font-black flex items-center justify-center gap-2 border transition-all tracking-wider ${(automationEnabled || isManualStartBlocked)
+                className={`w-full py-4 rounded-xl text-xs font-black flex items-center justify-center gap-2 border transition-all tracking-wider ${automationEnabled
                   ? 'bg-slate-800 text-slate-500 border-slate-700 cursor-not-allowed opacity-70'
                   : selectedPlant.isPumpOn
                     ? 'bg-rose-500/10 text-rose-400 border-rose-500/30'
@@ -629,11 +612,6 @@ export default function SmartIrrigationDashboard(): React.JSX.Element {
                 <Power size={14} />
                 {selectedPlant.isPumpOn ? "STOP RELÈ (HARDWARE OVERRIDE)" : "AVVIA RELÈ (HARDWARE OVERRIDE)"}
               </button>
-              {isCooldownActive && !automationEnabled && !selectedPlant.isPumpOn && (
-                <p className="text-[11px] font-mono text-amber-400 mt-2 px-1">
-                  Cooldown attivo: riattivazione disponibile tra {formatCooldown(cooldownRemainingMs)}
-                </p>
-              )}
             </div>
 
             {/* COLONNA DESTRA */}
@@ -701,7 +679,8 @@ export default function SmartIrrigationDashboard(): React.JSX.Element {
                 </div>
               </div>
 
-              {/* GRAFICO TEMPORALE */}
+              {/* GRAFICO TEMPORALE DISABILITATO TEMPORANEAMENTE PER TEST INP */}
+              {/*
               <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 md:p-5 space-y-4 shadow-sm">
                 <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 px-1">
                   <span className="text-xs font-bold text-slate-400 flex items-center gap-1.5">
@@ -724,7 +703,6 @@ export default function SmartIrrigationDashboard(): React.JSX.Element {
                   </div>
                 </div>
 
-                {/* AREA CHART CON ANIMAZIONI DISATTIVATE (isAnimationActive={false}) */}
                 <div className="h-56 sm:h-64 md:h-72 w-full">
                   <ResponsiveContainer width="100%" height="100%">
                     <AreaChart data={filteredHistory} margin={{ top: 5, right: 10, left: -25, bottom: 0 }}>
@@ -740,7 +718,6 @@ export default function SmartIrrigationDashboard(): React.JSX.Element {
                       <YAxis domain={[0, 100]} stroke="#475569" tick={{ fontSize: 9 }} />
                       <Tooltip content={<CustomTooltip />} />
 
-                      {/* Umidità - Animazione Rimossa */}
                       <Area
                         type="monotone"
                         dataKey="moisture"
@@ -751,7 +728,6 @@ export default function SmartIrrigationDashboard(): React.JSX.Element {
                         isAnimationActive={false}
                       />
 
-                      {/* Stato Pompa ON/OFF - Animazione Rimossa */}
                       <Area
                         type="stepAfter"
                         dataKey="pumpState"
@@ -768,6 +744,7 @@ export default function SmartIrrigationDashboard(): React.JSX.Element {
                   Dati caricati da backend reale via WebSocket + API REST.
                 </div>
               </div>
+              */}
 
             </div>
           </div>
