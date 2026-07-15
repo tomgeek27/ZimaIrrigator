@@ -3,6 +3,7 @@ import { SerialPort } from 'serialport';
 import { ReadlineParser } from '@serialport/parser-readline';
 import { broadcastLog, broadcastUpdate } from './broadcast.ts';
 import { plantsCache } from './state.ts';
+import { insertEvent } from './db/queries.ts';
 
 const ARDUINO_PORT = process.env.SERIAL_PORT || '/dev/ttyACM0';
 
@@ -82,6 +83,15 @@ export function connectSerial(onTelemetry: (plantId: string, moisture: number) =
         if (err) {
           console.error('[SERIAL] Flush error:', err);
           broadcastLog('Errore flush buffer seriale.', 'error');
+          void insertEvent('SYSTEM', 'SERIAL_FLUSH_FAILED', {
+            triggerType: 'SYSTEM',
+            level: 'error',
+            details: {
+              error: String(err),
+            },
+          }).catch((insertErr) => {
+            console.error('[EVENT_LOG] SERIAL_FLUSH_FAILED insert error', insertErr);
+          });
         } else {
           console.log('[SERIAL] Buffer svuotato');
           broadcastLog('Connessione Arduino stabilita, buffer svuotato.', 'info');
@@ -95,6 +105,16 @@ export function connectSerial(onTelemetry: (plantId: string, moisture: number) =
             plant.pumpActive = false;
             sendSerialCommand(relayPin, 'OFF');
             broadcastLog(`[SERIAL SYNC] relè ${relayPin} forzato OFF alla connessione`, 'warning');
+            void insertEvent('SYSTEM', 'SERIAL_RELAY_FORCED_OFF', {
+              plantId: plant.config.id,
+              triggerType: 'SYSTEM',
+              level: 'warning',
+              details: {
+                relayPin,
+              },
+            }).catch((insertErr) => {
+              console.error('[EVENT_LOG] SERIAL_RELAY_FORCED_OFF insert error', insertErr);
+            });
           }
 
           broadcastUpdate();
@@ -110,6 +130,13 @@ export function connectSerial(onTelemetry: (plantId: string, moisture: number) =
       } catch {
         console.log(`[ARDUINO (unparseable)] ${line.trim()}`);
         broadcastLog(`Riga seriale non JSON: ${line.trim()}`, 'warning');
+        await insertEvent('SYSTEM', 'SERIAL_PARSE_ERROR', {
+          triggerType: 'SYSTEM',
+          level: 'warning',
+          details: {
+            raw: line.trim(),
+          },
+        });
         return;
       }
 
@@ -134,6 +161,20 @@ export function connectSerial(onTelemetry: (plantId: string, moisture: number) =
         const actionInfo = parsed.action ? ` action=${parsed.action}` : '';
         console.log(`[ARDUINO - command] ${JSON.stringify(parsed)}`);
         broadcastLog(`[ARDUINO CMD] ${parsed.message}${pinInfo}${actionInfo}`, level);
+
+        if (parsed.status === 'error') {
+          await insertEvent('SYSTEM', 'SERIAL_UNHANDLED_MESSAGE', {
+            triggerType: 'SYSTEM',
+            level: 'warning',
+            details: {
+              source: 'command',
+              message: parsed.message,
+              pin: parsed.pin ?? null,
+              action: parsed.action ?? null,
+            },
+          });
+        }
+
         return;
       }
 
@@ -145,6 +186,14 @@ export function connectSerial(onTelemetry: (plantId: string, moisture: number) =
 
       console.log(`[ARDUINO] JSON non gestito: ${line.trim()}`);
       broadcastLog(`Messaggio JSON seriale non gestito: ${line.trim()}`, 'warning');
+      await insertEvent('SYSTEM', 'SERIAL_UNHANDLED_MESSAGE', {
+        triggerType: 'SYSTEM',
+        level: 'warning',
+        details: {
+          source: 'json',
+          raw: line.trim(),
+        },
+      });
     });
 
     return true;

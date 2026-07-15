@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { plantsCache } from '../state.ts';
 import { evaluatePump } from '../pumpControl.ts';
 import { applyPumpDecision } from '../pumpActions.ts';
-import { updatePlantConfig } from '../db/queries.ts';
+import { insertEvent, updatePlantConfig } from '../db/queries.ts';
 import { broadcastUpdate } from '../broadcast.ts';
 import type { PlantConfig } from '../types.ts';
 
@@ -33,6 +33,7 @@ export async function configRoutes(fastify: FastifyInstance) {
       ...body,
       relayPin: Number(body.relayPin ?? plant.config.relayPin),
     };
+    const previousConfig: PlantConfig = { ...plant.config };
     const wasAutoEnabled = plant.config.autoEnabled;
 
     if (!Number.isFinite(nextConfig.relayPin)) {
@@ -41,6 +42,31 @@ export async function configRoutes(fastify: FastifyInstance) {
 
     await updatePlantConfig(nextConfig);
     plant.config = nextConfig;
+
+    const trackedFields: Array<keyof Omit<PlantConfig, 'id'>> = [
+      'name',
+      'moistureMin',
+      'moistureMax',
+      'autoEnabled',
+      'relayPin',
+    ];
+
+    for (const field of trackedFields) {
+      const oldValue = previousConfig[field];
+      const newValue = nextConfig[field];
+      if (oldValue === newValue) continue;
+
+      await insertEvent('CONFIG', 'CONFIG_UPDATED', {
+        plantId: nextConfig.id,
+        triggerType: 'MANUAL',
+        level: 'info',
+        details: {
+          field,
+          oldValue,
+          newValue,
+        },
+      });
+    }
 
     // Spegni subito la pompa solo nel momento in cui l'automazione viene disattivata.
     if (wasAutoEnabled && !nextConfig.autoEnabled && plant.pumpActive) {

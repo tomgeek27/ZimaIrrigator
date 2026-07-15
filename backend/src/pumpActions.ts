@@ -1,6 +1,6 @@
 import type { PlantState, PumpDecision, TriggerType } from './types.ts';
 import { sendSerialCommand } from './serial.ts';
-import { insertIrrigationLog } from './db/queries.ts';
+import { insertEvent } from './db/queries.ts';
 
 export async function setPumpState(
   plant: PlantState,
@@ -16,13 +16,17 @@ export async function setPumpState(
   plant.pumpActive = nextPumpActive;
 
   sendSerialCommand(plant.config.relayPin, nextPumpActive ? 'ON' : 'OFF');
-  // await insertIrrigationLog(
-  //   plant.config.id,
-  //   nextPumpActive ? 'PUMP_ON' : 'PUMP_OFF',
-  //   triggerType,
-  //   reason,
-  //   timestamp
-  // );
+  await insertEvent('PUMP', nextPumpActive ? 'PUMP_ON' : 'PUMP_OFF', {
+    plantId: plant.config.id,
+    triggerType,
+    level: nextPumpActive ? 'warning' : 'info',
+    details: {
+      relayPin: plant.config.relayPin,
+      moisture: plant.currentMoisture,
+      reason,
+    },
+    timestamp: new Date(timestamp),
+  });
 
   return true;
 }
