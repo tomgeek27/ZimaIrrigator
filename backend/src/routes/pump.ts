@@ -23,21 +23,13 @@ export async function pumpRoutes(fastify: FastifyInstance) {
 
     console.log(`[API /pump] comando manuale: plant=${plant.config.id}, relayPin=${relayPin}, active=${active}`);
 
-    const wasActive = plant.pumpActive;
-
-    const changed = await setPumpState(
+    await setPumpState(
       plant,
       active === 'ON',
       'MANUAL',
       `Override manuale relè -> ${active}`,
       Date.now()
     );
-
-    if (active === 'ON' && !wasActive && !changed) {
-      return reply.code(429).send({
-        error: 'Accensione bloccata da sicurezza (cooldown attivo o vincolo safety)',
-      });
-    }
 
     broadcastUpdate();
     return { success: true };

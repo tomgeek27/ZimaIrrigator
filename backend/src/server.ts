@@ -4,7 +4,7 @@ import fastifyCors from '@fastify/cors';
 
 import { loadPlantsFromDb } from './state.ts';
 import { connectSerial } from './serial.ts';
-import { handleNewTelemetry, startTelemetrySimulator } from './telemetry.ts';
+import { handleNewTelemetry } from './telemetry.ts';
 
 import { plantsRoutes } from './routes/plants.ts';
 import { historyRoutes } from './routes/history.ts';
@@ -32,7 +32,9 @@ async function main() {
 
   const connected = connectSerial(handleNewTelemetry);
   if (!connected) {
-    startTelemetrySimulator();
+    console.error('⚠️ Arduino non collegato');
+    // TODO: se non collegato mostrare errore a schermo
+    //startTelemetrySimulator();
   }
 
   try {

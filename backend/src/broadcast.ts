@@ -19,6 +19,7 @@ function broadcast(payload: unknown): void {
 }
 
 export function broadcastUpdate(customData?: unknown): void {
+  // console.log('Broadcasting update to clients', JSON.stringify(customData ?? getPlantsSnapshot()));
   broadcast({ type: 'UPDATE', data: customData ?? getPlantsSnapshot() });
 }
 

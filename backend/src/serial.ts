@@ -3,9 +3,6 @@ import { SerialPort } from 'serialport';
 import { ReadlineParser } from '@serialport/parser-readline';
 import { broadcastLog, broadcastUpdate } from './broadcast.ts';
 import { plantsCache } from './state.ts';
-import { insertIrrigationLog } from './db/queries.ts';
-import { clearSafetyTimer } from './pumpSafety.ts';
-import { markCooldownLock } from './pumpSafety.ts';
 
 const ARDUINO_PORT = process.env.SERIAL_PORT || '/dev/ttyACM0';
 
@@ -32,13 +29,7 @@ interface StatusMessage {
   message: string;
 }
 
-interface SafetyStopMessage {
-  type: 'SAFETY_STOP';
-  pin: number;
-  reason: string;
-}
-
-type ArduinoMessage = TelemetryMessage | CommandMessage | StatusMessage | SafetyStopMessage;
+type ArduinoMessage = TelemetryMessage | CommandMessage | StatusMessage;
 
 function isTelemetryMessage(msg: any): msg is TelemetryMessage {
   return (
@@ -117,7 +108,7 @@ export function connectSerial(onTelemetry: (plantId: string, moisture: number) =
       try {
         parsed = JSON.parse(line);
       } catch {
-        console.log(`[ARDUINO] ${line.trim()}`);
+        console.log(`[ARDUINO (unparseable)] ${line.trim()}`);
         broadcastLog(`Riga seriale non JSON: ${line.trim()}`, 'warning');
         return;
       }
@@ -130,7 +121,7 @@ export function connectSerial(onTelemetry: (plantId: string, moisture: number) =
         }
 
         const ts = new Date(arduinoEpoch + parsed.arduino_ms).toISOString();
-        console.log(`[ARDUINO] ${JSON.stringify({ ...parsed, ts })}`);
+        console.log(`[ARDUINO - telemetry] ${JSON.stringify({ ...parsed, ts })}`);
         broadcastLog(`Telemetria [${parsed.id}]: umidità ${parsed.moisture}%`, 'info');
 
         await onTelemetry(parsed.id, parsed.moisture);
@@ -141,37 +132,14 @@ export function connectSerial(onTelemetry: (plantId: string, moisture: number) =
         const level = parsed.status === 'error' ? 'warning' : 'info';
         const pinInfo = typeof parsed.pin === 'number' ? ` pin=${parsed.pin}` : '';
         const actionInfo = parsed.action ? ` action=${parsed.action}` : '';
-        console.log(`[ARDUINO] ${JSON.stringify(parsed)}`);
+        console.log(`[ARDUINO - command] ${JSON.stringify(parsed)}`);
         broadcastLog(`[ARDUINO CMD] ${parsed.message}${pinInfo}${actionInfo}`, level);
         return;
       }
 
       if (parsed.type === 'status') {
-        console.log(`[ARDUINO] ${JSON.stringify(parsed)}`);
+        console.log(`[ARDUINO - status] ${JSON.stringify(parsed)}`);
         broadcastLog(`[ARDUINO STATUS] ${parsed.message}`, 'info');
-        return;
-      }
-
-      if (parsed.type === 'SAFETY_STOP') {
-        const plant = Object.values(plantsCache).find((item) => item.config.relayPin === parsed.pin);
-        if (plant) {
-          plant.pumpActive = false;
-          clearSafetyTimer(plant.config.id);
-          markCooldownLock(plant.config.id, Date.now());
-          await insertIrrigationLog(
-            plant.config.id,
-            'PUMP_OFF',
-            'SAFETY',
-            `Firmware safety stop: ${parsed.reason}`,
-            Date.now()
-          );
-          broadcastUpdate();
-        }
-
-        broadcastLog(
-          `[ARDUINO SAFETY] pin=${parsed.pin} reason=${parsed.reason}`,
-          'warning'
-        );
         return;
       }
 

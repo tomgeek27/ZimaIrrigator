@@ -4,10 +4,7 @@ export interface PlantConfig {
   moistureMin: number;
   moistureMax: number;
   autoEnabled: boolean;
-  startEnabled: boolean;
-  stopEnabled: boolean;
   relayPin: number;
-  maxPumpRuntimeMs: number;
 }
 
 export interface PlantState {

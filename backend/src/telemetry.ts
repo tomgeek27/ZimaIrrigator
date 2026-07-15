@@ -15,7 +15,7 @@ export async function handleNewTelemetry(plantId: string, moisture: number): Pro
   await applyPumpDecision(plant, decision, timestamp);
 
   // Salva sempre la lettura nello storico, a prescindere da cambi di stato pompa
-  await insertHistoryPoint(plantId, moisture, plant.pumpActive, timestamp);
+  // await insertHistoryPoint(plantId, moisture, plant.pumpActive, timestamp);
 
   broadcastUpdate();
 }
@@ -24,14 +24,14 @@ export async function handleNewTelemetry(plantId: string, moisture: number): Pro
  * Simulatore di fallback: usato quando Arduino non è collegato, per poter
  * comunque sviluppare/testare dashboard e automazioni. Esegue un tick al minuto.
  */
-export function startTelemetrySimulator(): void {
-  setInterval(async () => {
-    console.log('⏱️ Polling al minuto (Simulazione)...');
-    for (const id in plantsCache) {
-      const plant = plantsCache[id];
-      const delta = plant.pumpActive ? 8 : -Math.floor(Math.random() * 3);
-      const nextMoisture = Math.min(100, Math.max(0, plant.currentMoisture + delta));
-      await handleNewTelemetry(id, nextMoisture);
-    }
-  }, 60_000);
-}
+// export function startTelemetrySimulator(): void {
+//   setInterval(async () => {
+//     console.log('⏱️ Polling al minuto (Simulazione)...');
+//     for (const id in plantsCache) {
+//       const plant = plantsCache[id];
+//       const delta = plant.pumpActive ? 8 : -Math.floor(Math.random() * 3);
+//       const nextMoisture = Math.min(100, Math.max(0, plant.currentMoisture + delta));
+//       await handleNewTelemetry(id, nextMoisture);
+//     }
+//   }, 60_000);
+// }

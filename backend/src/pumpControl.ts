@@ -5,13 +5,8 @@ import type { PlantConfig, PumpDecision } from './types.ts';
  *
  * Nel codice originale questa logica era duplicata: una versione (più semplice,
  * solo 2 rami) dentro handleNewTelemetry, e una versione diversa (4 rami) dentro
- * la route POST /api/config. La versione della route /config faceva scattare la
- * pompa anche su condizioni "inverse" (es. accensione quando moisture <= max con
- * stopEnabled, spegnimento quando moisture >= min con startEnabled), cosa che
- * rompe la semantica di isteresi classica (accendi sotto la soglia minima,
- * spegni sopra la soglia massima) e può causare comportamenti diversi a seconda
- * che il cambio di stato arrivi da una nuova telemetria o da un salvataggio di
- * configurazione. Questa funzione sostituisce entrambe le versioni.
+ * la route POST /api/config, generando divergenze di comportamento tra eventi
+ * di telemetria e salvataggio configurazione. Questa funzione è la regola unica.
  */
 export function evaluatePump(
   config: PlantConfig,
@@ -25,7 +20,7 @@ export function evaluatePump(
     return { pumpActive, changed: false, reason: '' };
   }
 
-  if (config.startEnabled && !pumpActive && currentMoisture < config.moistureMin) {
+  if (!pumpActive && currentMoisture < config.moistureMin) {
     return {
       pumpActive: true,
       changed: true,
@@ -33,7 +28,7 @@ export function evaluatePump(
     };
   }
 
-  if (config.stopEnabled && pumpActive && currentMoisture > config.moistureMax) {
+  if (pumpActive && currentMoisture > config.moistureMax) {
     return {
       pumpActive: false,
       changed: true,

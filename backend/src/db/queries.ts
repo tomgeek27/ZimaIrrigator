@@ -26,10 +26,7 @@ export async function updatePlantConfig(config: PlantConfig) {
     UPDATE plant_config SET
       moisture_min = ${config.moistureMin},
       moisture_max = ${config.moistureMax},
-      auto_enabled = ${config.autoEnabled},
-      start_enabled = ${config.startEnabled},
-      stop_enabled = ${config.stopEnabled},
-      max_pump_runtime_ms = ${config.maxPumpRuntimeMs}
+      auto_enabled = ${config.autoEnabled}
     WHERE id = ${config.id}
   `;
 }
