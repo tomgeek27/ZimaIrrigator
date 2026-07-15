@@ -1,7 +1,19 @@
 import { sql } from '../db.ts';
-import type { EventType, PlantConfig, TriggerType } from '../types.ts';
+import type { EventCategory, EventType, LogLevel, PlantConfig, TriggerType } from '../types.ts';
 
 export type HistoryBucket = 'raw' | '1m' | '15m' | '1h';
+
+export interface EventLogRow {
+  id: number;
+  plantId: string | null;
+  plantName: string | null;
+  category: EventCategory;
+  eventType: EventType;
+  triggerType: TriggerType | null;
+  level: LogLevel;
+  details: unknown;
+  timestamp: number;
+}
 
 export async function insertHistoryPoint(plantId: string, moisture: number, pumpActive: boolean, timestamp: Date) {
   await sql`
@@ -10,16 +22,32 @@ export async function insertHistoryPoint(plantId: string, moisture: number, pump
   `;
 }
 
-export async function insertIrrigationLog(
-  plantId: string,
+interface InsertEventOptions {
+  plantId?: string | null;
+  triggerType?: TriggerType | null;
+  level?: LogLevel;
+  details?: unknown;
+  timestamp?: Date;
+}
+
+export async function insertEvent(
+  category: EventCategory,
   eventType: EventType,
-  triggerType: TriggerType,
-  message: string,
-  timestamp: number
+  options: InsertEventOptions = {}
 ) {
+  const {
+    plantId = null,
+    triggerType = null,
+    level = 'info',
+    details = null,
+    timestamp = new Date(),
+  } = options;
+
+  const detailsJson = details === null ? null : JSON.stringify(details);
+
   await sql`
-    INSERT INTO irrigation_logs (plant_id, event_type, trigger_type, message, timestamp)
-    VALUES (${plantId}, ${eventType}, ${triggerType}, ${message}, ${timestamp})
+    INSERT INTO event_log (plant_id, category, event_type, trigger_type, level, details, timestamp)
+    VALUES (${plantId}, ${category}, ${eventType}, ${triggerType}, ${level}, ${detailsJson}::jsonb, ${timestamp})
   `;
 }
 
@@ -73,11 +101,21 @@ export async function fetchHistory(plantId: string, sinceTimestamp: Date, bucket
 }
 
 export async function fetchLogs(plantId: string, limit = 100) {
-  return sql`
-    SELECT event_type as "eventType", trigger_type as "triggerType", message, timestamp
-    FROM irrigation_logs
-    WHERE plant_id = ${plantId}
-    ORDER BY timestamp DESC
+  return sql<EventLogRow[]>`
+    SELECT
+      e.id,
+      e.plant_id as "plantId",
+      p.name as "plantName",
+      e.category,
+      e.event_type as "eventType",
+      e.trigger_type as "triggerType",
+      e.level,
+      e.details,
+      (EXTRACT(EPOCH FROM e.timestamp) * 1000)::bigint as timestamp
+    FROM event_log e
+    LEFT JOIN plant_config p ON p.id = e.plant_id
+    WHERE e.plant_id = ${plantId}
+    ORDER BY e.timestamp DESC
     LIMIT ${limit}
   `;
 }
@@ -86,6 +124,19 @@ export async function deleteHistoryOlderThan(cutoff: Date): Promise<number> {
   const rows = await sql<{ deleted: number }[]>`
     WITH deleted AS (
       DELETE FROM plant_history
+      WHERE timestamp < ${cutoff}
+      RETURNING 1
+    )
+    SELECT COUNT(*)::int AS deleted FROM deleted
+  `;
+
+  return rows[0]?.deleted ?? 0;
+}
+
+export async function deleteEventLogOlderThan(cutoff: Date): Promise<number> {
+  const rows = await sql<{ deleted: number }[]>`
+    WITH deleted AS (
+      DELETE FROM event_log
       WHERE timestamp < ${cutoff}
       RETURNING 1
     )

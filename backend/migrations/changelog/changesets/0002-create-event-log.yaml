@@ -1,0 +1,74 @@
+databaseChangeLog:
+  - changeSet:
+      id: 0004-create-event-log
+      author: irrigation-system
+      changes:
+        - createTable:
+            tableName: event_log
+            columns:
+              - column:
+                  name: id
+                  type: SERIAL
+                  constraints:
+                    primaryKey: true
+              - column:
+                  name: plant_id
+                  type: VARCHAR(50)
+                  constraints:
+                    nullable: true
+              - column:
+                  name: category
+                  type: VARCHAR(20)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: event_type
+                  type: VARCHAR(30)
+                  constraints:
+                    nullable: false
+              - column:
+                  name: trigger_type
+                  type: VARCHAR(20)
+                  constraints:
+                    nullable: true
+              - column:
+                  name: level
+                  type: VARCHAR(10)
+                  defaultValue: info
+                  constraints:
+                    nullable: false
+              - column:
+                  name: details
+                  type: JSONB
+                  constraints:
+                    nullable: true
+              - column:
+                  name: timestamp
+                  type: TIMESTAMPTZ
+                  defaultValueComputed: CURRENT_TIMESTAMP
+                  constraints:
+                    nullable: false
+        - addForeignKeyConstraint:
+            baseTableName: event_log
+            baseColumnNames: plant_id
+            referencedTableName: plant_config
+            referencedColumnNames: id
+            constraintName: fk_event_log_plant
+            onDelete: CASCADE
+        - createIndex:
+            indexName: idx_event_log_plant_time
+            tableName: event_log
+            columns:
+              - column:
+                  name: plant_id
+              - column:
+                  name: timestamp
+        - createIndex:
+            indexName: idx_event_log_event_type
+            tableName: event_log
+            columns:
+              - column:
+                  name: event_type
+      rollback:
+        - dropTable:
+            tableName: event_log

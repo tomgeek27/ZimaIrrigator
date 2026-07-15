@@ -3,3 +3,6 @@ databaseChangeLog:
   - include:
       file: changesets/0001-init.yaml
       relativeToChangelogFile: true
+  - include:
+      file: changesets/0002-create-event-log.yaml
+      relativeToChangelogFile: true
