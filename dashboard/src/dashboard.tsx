@@ -76,8 +76,13 @@ interface BackendHistoryPoint {
 }
 
 interface BackendLogEvent {
+  id: number;
+  plantId: string | null;
+  category: string;
   eventType: string;
-  triggerType: string;
+  triggerType: string | null;
+  level: 'info' | 'warning' | 'error';
+  details?: unknown;
   message: string;
   timestamp: number | string;
 }
@@ -99,6 +104,7 @@ const TIME_OPTIONS: TimeOption[] = [
 
 const LIVE_HISTORY_MAX_POINTS = 200;
 const LIVE_FLUSH_INTERVAL_MS = 1000;
+const WS_STALE_THRESHOLD_MS = 15_000;
 
 const EMPTY_STATS: PlantStats = {
   litersDelivered: 0,
@@ -113,7 +119,8 @@ const wsUrl = (() => {
   return `${protocol}//${host}:3001/ws`;
 })();
 
-function toLogType(eventType: string): LogEvent['type'] {
+function toLogType(eventType: string, level?: LogEvent['type']): LogEvent['type'] {
+  if (level) return level;
   if (eventType === 'PUMP_ON') return 'warning';
   if (eventType === 'PUMP_OFF') return 'info';
   return 'info';
@@ -169,8 +176,8 @@ function computeStats(history: HistoryPoint[]): PlantStats {
 
 export default function SmartIrrigationDashboard(): React.JSX.Element {
   const [plants, setPlants] = useState<PlantsData>({});
-  const [selectedTimeframe, setSelectedTimeframe] = useState<string>('24h');
-  const [pollingInterval, setPollingInterval] = useState<number>(5);
+  const [selectedTimeframe, setSelectedTimeframe] = useState<string>('5m');
+  const [logsRefreshInterval, setLogsRefreshInterval] = useState<number>(5);
   const [selectedPlantId, setSelectedPlantId] = useState<string>('');
   const [logs, setLogs] = useState<LogEvent[]>([]);
   const [historyLoading, setHistoryLoading] = useState<boolean>(false);
@@ -184,7 +191,7 @@ export default function SmartIrrigationDashboard(): React.JSX.Element {
   const selectedTimeOption = TIME_OPTIONS.find((option) => option.value === selectedTimeframe) || TIME_OPTIONS[5];
   const automationEnabled = selectedPlant?.autoEnabled ?? false;
   const msSinceLastUpdate = lastWsUpdateAt ? nowTs - lastWsUpdateAt : Number.POSITIVE_INFINITY;
-  const isDataLive = msSinceLastUpdate <= Math.max(10_000, pollingInterval * 3000);
+  const isDataLive = msSinceLastUpdate <= WS_STALE_THRESHOLD_MS;
   const lastUpdateLabel = lastWsUpdateAt
     ? new Date(lastWsUpdateAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
     : 'mai';
@@ -456,10 +463,10 @@ export default function SmartIrrigationDashboard(): React.JSX.Element {
 
         const payload = (await response.json()) as BackendLogEvent[];
         const mapped: LogEvent[] = payload.map((event, index) => ({
-          id: `${event.timestamp}-${index}`,
+          id: `${event.id ?? event.timestamp}-${index}`,
           timestamp: new Date(Number(event.timestamp)).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-          message: `[${event.triggerType}] ${event.message}`,
-          type: toLogType(event.eventType)
+          message: event.message,
+          type: toLogType(event.eventType, event.level)
         }));
         setLogs(mapped);
       } catch (_err) {
@@ -468,10 +475,10 @@ export default function SmartIrrigationDashboard(): React.JSX.Element {
     };
 
     refreshLogs();
-    const interval = setInterval(refreshLogs, Math.max(10000, pollingInterval * 2000));
+    const interval = setInterval(refreshLogs, Math.max(10000, logsRefreshInterval * 2000));
 
     return () => clearInterval(interval);
-  }, [addLog, pollingInterval, selectedPlantId]);
+  }, [addLog, logsRefreshInterval, selectedPlantId]);
 
   const persistConfig = useCallback(async (plant: Plant): Promise<void> => {
     try {
@@ -587,10 +594,10 @@ export default function SmartIrrigationDashboard(): React.JSX.Element {
         <div className="bg-slate-950/50 border border-slate-800 p-3 rounded-xl flex items-center justify-between text-[11px] font-mono">
           <div className="w-full space-y-2">
             <div className="flex items-center justify-between">
-              <span className="text-slate-500 font-bold">POLLING INTERVAL</span>
+              <span className="text-slate-500 font-bold">LOG REFRESH</span>
               <div className="flex items-center gap-1.5 text-slate-200">
                 <RefreshCw size={10} className="animate-spin text-emerald-400" />
-                <select value={pollingInterval} onChange={(e) => setPollingInterval(Number(e.target.value))} className="bg-transparent focus:outline-none font-bold">
+                <select value={logsRefreshInterval} onChange={(e) => setLogsRefreshInterval(Number(e.target.value))} className="bg-transparent focus:outline-none font-bold">
                   <option value={2} className="bg-slate-900">2s</option>
                   <option value={5} className="bg-slate-900">5s</option>
                 </select>
@@ -622,7 +629,7 @@ export default function SmartIrrigationDashboard(): React.JSX.Element {
         </div>
         <div className="flex items-center gap-1.5 bg-slate-900/80 border border-slate-800 px-2.5 py-1 rounded-xl text-[10px] font-bold text-slate-400">
           <RefreshCw size={10} className="animate-spin text-emerald-400" />
-          <select value={pollingInterval} onChange={(e) => setPollingInterval(Number(e.target.value))} className="bg-transparent focus:outline-none text-slate-200">
+          <select value={logsRefreshInterval} onChange={(e) => setLogsRefreshInterval(Number(e.target.value))} className="bg-transparent focus:outline-none text-slate-200">
             <option value={2} className="bg-slate-900">2s</option>
             <option value={5} className="bg-slate-900">5s</option>
           </select>

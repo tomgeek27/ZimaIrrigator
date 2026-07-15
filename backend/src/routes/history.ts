@@ -19,7 +19,7 @@ const TIMEFRAME_CONFIG: Record<HistoryTimeframe, HistoryWindowConfig> = {
   '7d': { windowMs: 7 * 24 * 60 * 60 * 1000, bucket: '1h' },
 };
 
-const DEFAULT_TIMEFRAME: HistoryTimeframe = '24h';
+const DEFAULT_TIMEFRAME: HistoryTimeframe = '5m';
 
 function normalizeTimeframe(value?: string): HistoryTimeframe {
   if (!value) return DEFAULT_TIMEFRAME;

@@ -6,6 +6,7 @@ import { loadPlantsFromDb } from './state.ts';
 import { connectSerial } from './serial.ts';
 import { handleNewTelemetry } from './telemetry.ts';
 import { startHistoryRetentionJob } from './historyRetention.ts';
+import { startEventLogRetentionJob } from './eventLogRetention.ts';
 
 import { plantsRoutes } from './routes/plants.ts';
 import { historyRoutes } from './routes/history.ts';
@@ -31,6 +32,7 @@ async function main() {
 
   await loadPlantsFromDb();
   startHistoryRetentionJob();
+  startEventLogRetentionJob();
 
   const connected = connectSerial(handleNewTelemetry);
   if (!connected) {
