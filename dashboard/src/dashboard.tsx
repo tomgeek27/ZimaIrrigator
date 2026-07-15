@@ -1,8 +1,9 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   Droplet, Power, RefreshCw,
-  FileText, Sliders
+  FileText, Sliders, Activity, Calendar
 } from 'lucide-react';
+import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined) || '/api';
 
@@ -82,6 +83,23 @@ interface BackendLogEvent {
 }
 
 type PlantsData = Record<string, Plant>;
+type LiveHistoryByPlant = Record<string, HistoryPoint[]>;
+type TimeOption = { label: string; value: string; ms: number };
+
+const TIME_OPTIONS: TimeOption[] = [
+  { label: 'Ultimi 5 min', value: '5m', ms: 5 * 60 * 1000 },
+  { label: 'Ultimi 15 min', value: '15m', ms: 15 * 60 * 1000 },
+  { label: 'Ultimi 30 min', value: '30m', ms: 30 * 60 * 1000 },
+  { label: 'Ultima ora', value: '1h', ms: 60 * 60 * 1000 },
+  { label: 'Ultime 12 ore', value: '12h', ms: 12 * 60 * 60 * 1000 },
+  { label: 'Ultime 24 ore', value: '24h', ms: 24 * 60 * 60 * 1000 },
+  { label: 'Ultimi 3 giorni', value: '3d', ms: 3 * 24 * 60 * 60 * 1000 },
+  { label: 'Ultimi 7 giorni', value: '7d', ms: 7 * 24 * 60 * 60 * 1000 },
+];
+
+const LIVE_HISTORY_MAX_POINTS = 200;
+const LIVE_FLUSH_INTERVAL_MS = 1000;
+
 const EMPTY_STATS: PlantStats = {
   litersDelivered: 0,
   activations: 0,
@@ -151,14 +169,19 @@ function computeStats(history: HistoryPoint[]): PlantStats {
 
 export default function SmartIrrigationDashboard(): React.JSX.Element {
   const [plants, setPlants] = useState<PlantsData>({});
-  const selectedTimeframe = '24h';
+  const [selectedTimeframe, setSelectedTimeframe] = useState<string>('24h');
   const [pollingInterval, setPollingInterval] = useState<number>(5);
   const [selectedPlantId, setSelectedPlantId] = useState<string>('');
   const [logs, setLogs] = useState<LogEvent[]>([]);
+  const [historyLoading, setHistoryLoading] = useState<boolean>(false);
   const [lastWsUpdateAt, setLastWsUpdateAt] = useState<number | null>(null);
   const [nowTs, setNowTs] = useState<number>(Date.now());
+  const [liveHistoryByPlant, setLiveHistoryByPlant] = useState<LiveHistoryByPlant>({});
+  const pendingLiveByPlantRef = useRef<LiveHistoryByPlant>({});
+  const liveFlushTimerRef = useRef<number | null>(null);
 
   const selectedPlant = plants[selectedPlantId];
+  const selectedTimeOption = TIME_OPTIONS.find((option) => option.value === selectedTimeframe) || TIME_OPTIONS[5];
   const automationEnabled = selectedPlant?.autoEnabled ?? false;
   const msSinceLastUpdate = lastWsUpdateAt ? nowTs - lastWsUpdateAt : Number.POSITIVE_INFINITY;
   const isDataLive = msSinceLastUpdate <= Math.max(10_000, pollingInterval * 3000);
@@ -178,10 +201,42 @@ export default function SmartIrrigationDashboard(): React.JSX.Element {
     setLogs(prev => [newLog, ...prev].slice(0, 100));
   }, []);
 
+  const flushPendingLivePoints = useCallback((): void => {
+    const pending = pendingLiveByPlantRef.current;
+    pendingLiveByPlantRef.current = {};
+    liveFlushTimerRef.current = null;
+
+    const hasPending = Object.keys(pending).length > 0;
+    if (!hasPending) return;
+
+    setLiveHistoryByPlant((prev) => {
+      const next: LiveHistoryByPlant = { ...prev };
+
+      Object.entries(pending).forEach(([plantId, points]) => {
+        const existing = next[plantId] || [];
+        next[plantId] = [...existing, ...points].slice(-LIVE_HISTORY_MAX_POINTS);
+      });
+
+      return next;
+    });
+  }, []);
+
+  const queueLivePoint = useCallback((plantId: string, point: HistoryPoint): void => {
+    const queue = pendingLiveByPlantRef.current[plantId] || [];
+    pendingLiveByPlantRef.current[plantId] = [...queue, point];
+
+    if (liveFlushTimerRef.current === null) {
+      liveFlushTimerRef.current = window.setTimeout(() => {
+        flushPendingLivePoints();
+      }, LIVE_FLUSH_INTERVAL_MS);
+    }
+  }, [flushPendingLivePoints]);
+
   const refreshHistory = useCallback(async (plantId: string): Promise<void> => {
     if (!plantId) return;
 
     try {
+      setHistoryLoading(true);
       const response = await fetch(`${API_BASE_URL}/history/${plantId}?timeframe=${selectedTimeframe}`);
       if (!response.ok) throw new Error('history fetch failed');
       const payload = (await response.json()) as BackendHistoryPoint[];
@@ -203,8 +258,13 @@ export default function SmartIrrigationDashboard(): React.JSX.Element {
           }
         };
       });
+
+      pendingLiveByPlantRef.current[plantId] = [];
+      setLiveHistoryByPlant((prev) => ({ ...prev, [plantId]: [] }));
     } catch (_err) {
       addLog('Errore nel recupero dello storico.', 'error');
+    } finally {
+      setHistoryLoading(false);
     }
   }, [addLog, selectedTimeframe]);
 
@@ -287,6 +347,14 @@ export default function SmartIrrigationDashboard(): React.JSX.Element {
   }, []);
 
   useEffect(() => {
+    return () => {
+      if (liveFlushTimerRef.current !== null) {
+        window.clearTimeout(liveFlushTimerRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     let isCancelled = false;
     let closedByCleanup = false;
     let socket: WebSocket | null = null;
@@ -329,14 +397,14 @@ export default function SmartIrrigationDashboard(): React.JSX.Element {
                 pumpState: mapped.isPumpOn ? 100 : 0
               };
 
-              const history = [...(existing?.history || []), livePoint].slice(-800);
-
               console.log(`[WS] plant ${id} moisture ${existing?.moisture ?? 'n/a'} -> ${mapped.moisture}`, state);
+
+              queueLivePoint(id, livePoint);
 
               next[id] = {
                 ...mapped,
-                history,
-                stats: computeStats(history)
+                history: existing?.history || [],
+                stats: existing?.stats || EMPTY_STATS
               };
             });
 
@@ -367,18 +435,16 @@ export default function SmartIrrigationDashboard(): React.JSX.Element {
       isCancelled = true;
       closedByCleanup = true;
       window.clearTimeout(connectTimer);
+      flushPendingLivePoints();
       if (socket) socket.close();
     };
-  }, []); // <-- nessuna dipendenza: il socket vive per tutta la vita del componente
+  }, [addLog, flushPendingLivePoints, queueLivePoint]); // <-- nessuna dipendenza funzionale da stato UI
 
   useEffect(() => {
     if (!selectedPlantId) return;
 
     refreshHistory(selectedPlantId);
-    const interval = setInterval(() => refreshHistory(selectedPlantId), pollingInterval * 1000);
-
-    return () => clearInterval(interval);
-  }, [pollingInterval, refreshHistory, selectedPlantId]);
+  }, [refreshHistory, selectedPlantId, selectedTimeframe]);
 
   useEffect(() => {
     if (!selectedPlantId) return;
@@ -471,6 +537,41 @@ export default function SmartIrrigationDashboard(): React.JSX.Element {
     }
   };
 
+  const chartData = useMemo(() => {
+    if (!selectedPlant || !selectedPlantId) return [];
+
+    const restHistory = selectedPlant.history;
+    const liveHistory = liveHistoryByPlant[selectedPlantId] || [];
+    const lastRestTs = restHistory.length > 0 ? restHistory[restHistory.length - 1].timestamp : 0;
+    const liveAfterRest = liveHistory.filter((point) => point.timestamp > lastRestTs);
+
+    return [...restHistory, ...liveAfterRest];
+  }, [liveHistoryByPlant, selectedPlant, selectedPlantId]);
+
+  const formatXAxis = useCallback((tickItem: number) => {
+    const date = new Date(tickItem);
+    if (selectedTimeOption.ms > 24 * 60 * 60 * 1000) {
+      return date.toLocaleDateString([], { day: '2-digit', month: '2-digit' });
+    }
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  }, [selectedTimeOption.ms]);
+
+  const CustomTooltip = useCallback(({ active, payload }: any) => {
+    if (active && payload && payload.length) {
+      const date = new Date(payload[0].payload.timestamp);
+      return (
+        <div className="bg-slate-900 border border-slate-800 p-2 rounded-xl text-[11px] font-mono shadow-xl">
+          <p className="text-slate-500 mb-1 font-bold">Data: {date.toLocaleString()}</p>
+          <p className="text-blue-400">Umidità: <span className="font-bold text-slate-100">{payload[0].value}%</span></p>
+          <p className="text-emerald-400">
+            Pompa: <span className="font-bold text-slate-100">{payload[1]?.value === 100 ? 'ON' : 'OFF'}</span>
+          </p>
+        </div>
+      );
+    }
+    return null;
+  }, []);
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans antialiased flex flex-col md:flex-row">
 
@@ -484,13 +585,31 @@ export default function SmartIrrigationDashboard(): React.JSX.Element {
         </div>
 
         <div className="bg-slate-950/50 border border-slate-800 p-3 rounded-xl flex items-center justify-between text-[11px] font-mono">
-          <span className="text-slate-500 font-bold">POLLING INTERVAL</span>
-          <div className="flex items-center gap-1.5 text-slate-200">
-            <RefreshCw size={10} className="animate-spin text-emerald-400" />
-            <select value={pollingInterval} onChange={(e) => setPollingInterval(Number(e.target.value))} className="bg-transparent focus:outline-none font-bold">
-              <option value={2} className="bg-slate-900">2s</option>
-              <option value={5} className="bg-slate-900">5s</option>
-            </select>
+          <div className="w-full space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-slate-500 font-bold">POLLING INTERVAL</span>
+              <div className="flex items-center gap-1.5 text-slate-200">
+                <RefreshCw size={10} className="animate-spin text-emerald-400" />
+                <select value={pollingInterval} onChange={(e) => setPollingInterval(Number(e.target.value))} className="bg-transparent focus:outline-none font-bold">
+                  <option value={2} className="bg-slate-900">2s</option>
+                  <option value={5} className="bg-slate-900">5s</option>
+                </select>
+              </div>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-slate-500 font-bold">TIME WINDOW</span>
+              <select
+                value={selectedTimeframe}
+                onChange={(e) => setSelectedTimeframe(e.target.value)}
+                className="bg-transparent focus:outline-none font-bold text-slate-200"
+              >
+                {TIME_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value} className="bg-slate-900">
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
         </div>
       </aside>
@@ -506,6 +625,14 @@ export default function SmartIrrigationDashboard(): React.JSX.Element {
           <select value={pollingInterval} onChange={(e) => setPollingInterval(Number(e.target.value))} className="bg-transparent focus:outline-none text-slate-200">
             <option value={2} className="bg-slate-900">2s</option>
             <option value={5} className="bg-slate-900">5s</option>
+          </select>
+          <span className="text-slate-500">|</span>
+          <select value={selectedTimeframe} onChange={(e) => setSelectedTimeframe(e.target.value)} className="bg-transparent focus:outline-none text-slate-200">
+            {TIME_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value} className="bg-slate-900">
+                {option.label}
+              </option>
+            ))}
           </select>
         </div>
       </header>
@@ -679,8 +806,6 @@ export default function SmartIrrigationDashboard(): React.JSX.Element {
                 </div>
               </div>
 
-              {/* GRAFICO TEMPORALE DISABILITATO TEMPORANEAMENTE PER TEST INP */}
-              {/*
               <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 md:p-5 space-y-4 shadow-sm">
                 <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 px-1">
                   <span className="text-xs font-bold text-slate-400 flex items-center gap-1.5">
@@ -704,47 +829,56 @@ export default function SmartIrrigationDashboard(): React.JSX.Element {
                 </div>
 
                 <div className="h-56 sm:h-64 md:h-72 w-full">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <AreaChart data={filteredHistory} margin={{ top: 5, right: 10, left: -25, bottom: 0 }}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-                      <XAxis
-                        dataKey="timestamp"
-                        type="number"
-                        domain={[currentTimeWindow.min, currentTimeWindow.max]}
-                        tickFormatter={formatXAxis}
-                        stroke="#475569"
-                        tick={{ fontSize: 8, fontFamily: 'monospace' }}
-                      />
-                      <YAxis domain={[0, 100]} stroke="#475569" tick={{ fontSize: 9 }} />
-                      <Tooltip content={<CustomTooltip />} />
+                  {historyLoading ? (
+                    <div className="h-full w-full flex items-center justify-center text-xs font-mono text-slate-500">
+                      Caricamento storico...
+                    </div>
+                  ) : chartData.length === 0 ? (
+                    <div className="h-full w-full flex items-center justify-center text-xs font-mono text-slate-500">
+                      Nessun dato disponibile per questa finestra.
+                    </div>
+                  ) : (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <AreaChart data={chartData} margin={{ top: 5, right: 10, left: -25, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+                        <XAxis
+                          dataKey="timestamp"
+                          type="number"
+                          domain={['dataMin', 'dataMax']}
+                          tickFormatter={formatXAxis}
+                          stroke="#475569"
+                          tick={{ fontSize: 8, fontFamily: 'monospace' }}
+                        />
+                        <YAxis domain={[0, 100]} stroke="#475569" tick={{ fontSize: 9 }} />
+                        <Tooltip content={<CustomTooltip />} />
 
-                      <Area
-                        type="monotone"
-                        dataKey="moisture"
-                        stroke="#3b82f6"
-                        strokeWidth={2}
-                        fillOpacity={0.01}
-                        fill="#2563eb"
-                        isAnimationActive={false}
-                      />
+                        <Area
+                          type="monotone"
+                          dataKey="moisture"
+                          stroke="#3b82f6"
+                          strokeWidth={2}
+                          fillOpacity={0.01}
+                          fill="#2563eb"
+                          isAnimationActive={false}
+                        />
 
-                      <Area
-                        type="stepAfter"
-                        dataKey="pumpState"
-                        stroke="#10b981"
-                        strokeWidth={1}
-                        fillOpacity={0.1}
-                        fill="#10b981"
-                        isAnimationActive={false}
-                      />
-                    </AreaChart>
-                  </ResponsiveContainer>
+                        <Area
+                          type="stepAfter"
+                          dataKey="pumpState"
+                          stroke="#10b981"
+                          strokeWidth={1}
+                          fillOpacity={0.1}
+                          fill="#10b981"
+                          isAnimationActive={false}
+                        />
+                      </AreaChart>
+                    </ResponsiveContainer>
+                  )}
                 </div>
                 <div className="text-[10px] font-mono text-center text-slate-500">
-                  Dati caricati da backend reale via WebSocket + API REST.
+                  Storico via REST (mount/cambio timeframe) + buffer live WebSocket (max {LIVE_HISTORY_MAX_POINTS} punti, flush 1s).
                 </div>
               </div>
-              */}
 
             </div>
           </div>
