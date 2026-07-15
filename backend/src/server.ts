@@ -5,6 +5,7 @@ import fastifyCors from '@fastify/cors';
 import { loadPlantsFromDb } from './state.ts';
 import { connectSerial } from './serial.ts';
 import { handleNewTelemetry } from './telemetry.ts';
+import { startHistoryRetentionJob } from './historyRetention.ts';
 
 import { plantsRoutes } from './routes/plants.ts';
 import { historyRoutes } from './routes/history.ts';
@@ -29,6 +30,7 @@ async function main() {
   await fastify.register(healthRoutes);
 
   await loadPlantsFromDb();
+  startHistoryRetentionJob();
 
   const connected = connectSerial(handleNewTelemetry);
   if (!connected) {

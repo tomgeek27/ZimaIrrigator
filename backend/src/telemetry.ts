@@ -3,6 +3,7 @@ import { evaluatePump } from './pumpControl.ts';
 import { applyPumpDecision } from './pumpActions.ts';
 import { insertHistoryPoint } from './db/queries.ts';
 import { broadcastUpdate } from './broadcast.ts';
+import { markHistorySamplePersisted, shouldPersistHistorySample } from './historySampling.ts';
 
 export async function handleNewTelemetry(plantId: string, moisture: number): Promise<void> {
   const plant = plantsCache[plantId];
@@ -14,8 +15,10 @@ export async function handleNewTelemetry(plantId: string, moisture: number): Pro
   const decision = evaluatePump(plant.config, moisture, plant.pumpActive);
   await applyPumpDecision(plant, decision, timestamp);
 
-  // Salva sempre la lettura nello storico, a prescindere da cambi di stato pompa
-  // await insertHistoryPoint(plantId, moisture, plant.pumpActive, timestamp);
+  if (shouldPersistHistorySample(plantId, timestamp, plant.pumpActive)) {
+    await insertHistoryPoint(plantId, moisture, plant.pumpActive, new Date(timestamp));
+    markHistorySamplePersisted(plantId, timestamp, plant.pumpActive);
+  }
 
   broadcastUpdate();
 }
