@@ -3,6 +3,8 @@
 const int SENSOR_PINS[] = {A0, A1, A2, A3, A4};
 const int RELAY_PINS[] = {2, 3, 4, 5, 6};
 const int NUM_PLANTS = 5;
+const int PUMP_ENABLE_LEVEL = LOW;
+const int PUMP_DISABLE_LEVEL = HIGH;
 
 unsigned long pumpStartTime[NUM_PLANTS] = {0, 0, 0, 0, 0};
 bool isPumpActive[NUM_PLANTS] = {false, false, false, false, false};
@@ -29,7 +31,7 @@ void setup()
   for (int i = 0; i < NUM_PLANTS; i++)
   {
     pinMode(RELAY_PINS[i], OUTPUT);
-    digitalWrite(RELAY_PINS[i], LOW);
+    digitalWrite(RELAY_PINS[i], PUMP_DISABLE_LEVEL);
     isPumpActive[i] = false;
     pumpStartTime[i] = 0;
   }
@@ -121,17 +123,17 @@ void processCommand(String comando)
 
   if (azione == "ON")
   {
-    digitalWrite(pin, HIGH);
+    digitalWrite(pin, PUMP_ENABLE_LEVEL);
     isPumpActive[relayIdx] = true;
     pumpStartTime[relayIdx] = millis();
-    sendResponse("ok", "pin acceso", pin, azione);
+    sendResponse("ok", "pompa attivata (pin LOW)", pin, azione);
   }
   else if (azione == "OFF")
   {
-    digitalWrite(pin, LOW);
+    digitalWrite(pin, PUMP_DISABLE_LEVEL);
     isPumpActive[relayIdx] = false;
     pumpStartTime[relayIdx] = 0;
-    sendResponse("ok", "pin spento", pin, azione);
+    sendResponse("ok", "pompa disattivata (pin HIGH)", pin, azione);
   }
   else
   {

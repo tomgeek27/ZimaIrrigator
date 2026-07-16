@@ -571,7 +571,7 @@ export default function SmartIrrigationDashboard(): React.JSX.Element {
           <p className="text-slate-500 mb-1 font-bold">Data: {date.toLocaleString()}</p>
           <p className="text-blue-400">Umidità: <span className="font-bold text-slate-100">{payload[0].value}%</span></p>
           <p className="text-emerald-400">
-            Pompa: <span className="font-bold text-slate-100">{payload[1]?.value === 100 ? 'ON' : 'OFF'}</span>
+            Pompa: <span className="font-bold text-slate-100">{payload[1]?.value === 100 ? 'ON (LOW)' : 'OFF (HIGH)'}</span>
           </p>
         </div>
       );
@@ -678,7 +678,7 @@ export default function SmartIrrigationDashboard(): React.JSX.Element {
                           : 'text-slate-200 border-slate-600/80 bg-slate-900/90'
                           }`}>
                           <span className={`h-1.5 w-1.5 rounded-full ${plant.isPumpOn ? 'bg-rose-300' : 'bg-slate-300'}`} />
-                          {plant.isPumpOn ? 'ON' : 'OFF'}
+                          {plant.isPumpOn ? 'ON (LOW)' : 'OFF (HIGH)'}
                         </span>
                       </div>
                     </button>
@@ -707,7 +707,7 @@ export default function SmartIrrigationDashboard(): React.JSX.Element {
                         : 'text-slate-100 border-slate-500/80 bg-slate-800/90'
                         }`}>
                         <span className={`h-2 w-2 rounded-full ${selectedPlant.isPumpOn ? 'bg-rose-300' : 'bg-slate-200'}`} />
-                        {selectedPlant.isPumpOn ? 'POMPA ON' : 'POMPA OFF'}
+                        {selectedPlant.isPumpOn ? 'POMPA ON (LOW)' : 'POMPA OFF (HIGH)'}
                       </span>
                     </div>
                   </div>
@@ -727,6 +727,7 @@ export default function SmartIrrigationDashboard(): React.JSX.Element {
                     <span className="text-slate-200 font-bold">{selectedPlant.relayPin}</span>
                   </div>
                 </div>
+                <p className="text-[10px] font-mono text-slate-500">Logica relè active-low: LOW = pompa ON, HIGH = pompa OFF.</p>
               </div>
 
               {/* RELE OVERRIDE BUTTON */}
