@@ -1,3 +1,5 @@
+name: irrigation
+
 services:
   irrigation-db:
     image: postgres:15-alpine
@@ -7,15 +9,36 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: password
       POSTGRES_DB: irrigation_db
+      TZ: $TZ
     ports:
-      - "5432:5432"
+      - target: 5432
+        published: "5432"
+        protocol: tcp
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - type: bind
+        source: /media/Safe-Storage/src/$AppID/.postgres
+        target: /var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
       timeout: 5s
       retries: 5
+    x-casaos:
+      envs:
+        - container: POSTGRES_PASSWORD
+          description:
+            en_US: Password for the postgres user. Change this before first install.
+            it_IT: Password dell'utente postgres. Cambiala prima della prima installazione.
+      ports:
+        - container: "5432"
+          description:
+            en_US: PostgreSQL database port.
+            it_IT: Porta del database PostgreSQL.
+      volumes:
+        - container: /var/lib/postgresql/data
+          description:
+            en_US: Database data directory.
+            it_IT: Directory dati del database.
 
   irrigation-migrations:
     image: liquibase/liquibase:4.29
@@ -24,13 +47,21 @@ services:
       irrigation-db:
         condition: service_healthy
     volumes:
-      - ./backend/migrations/changelog:/liquibase/changelog
+      - type: bind
+        source: /media/Safe-Storage/src/$AppID/backend/migrations/changelog
+        target: /liquibase/changelog
     command:
       - --changelog-file=changelog/changelog-master.yaml
       - --url=jdbc:postgresql://irrigation-db:5432/irrigation_db
       - --username=postgres
       - --password=password
       - update
+    x-casaos:
+      volumes:
+        - container: /liquibase/changelog
+          description:
+            en_US: Liquibase changelog files.
+            it_IT: File changelog di Liquibase.
 
   irrigation-backend:
     build:
@@ -39,15 +70,29 @@ services:
     container_name: irrigation-backend
     restart: always
     ports:
-      - "3001:3001"
+      - target: 3001
+        published: "3001"
+        protocol: tcp
     devices:
       - "/dev/ttyACM0:/dev/ttyACM0"
     environment:
       - SERIAL_PORT=/dev/ttyACM0
       - DATABASE_URL=postgres://postgres:password@irrigation-db:5432/irrigation_db
+      - TZ=$TZ
     depends_on:
       irrigation-migrations:
         condition: service_completed_successfully
+    x-casaos:
+      envs:
+        - container: SERIAL_PORT
+          description:
+            en_US: Serial device path for the Arduino connection.
+            it_IT: Percorso del device seriale per la connessione Arduino.
+      ports:
+        - container: "3001"
+          description:
+            en_US: Backend API port.
+            it_IT: Porta dell'API backend.
 
   irrigation-dashboard:
     build:
@@ -56,9 +101,45 @@ services:
     container_name: irrigation-dashboard
     restart: always
     ports:
-      - "5173:80"
+      - target: 80
+        published: "5173"
+        protocol: tcp
     depends_on:
       - irrigation-backend
+    x-casaos:
+      ports:
+        - container: "80"
+          description:
+            en_US: Web dashboard HTTP port.
+            it_IT: Porta HTTP della dashboard web.
 
-volumes:
-  postgres_data:
+x-casaos:
+  architectures:
+    - amd64
+    - arm64
+    - arm
+  main: irrigation-dashboard
+  author: tomgeek27
+  category: Utilities
+  description:
+    en_US: Home irrigation automation system with Arduino serial control, sensor history and pump safety logic.
+    it_IT: Sistema di automazione per irrigazione domestica con controllo seriale Arduino, storico sensori e logica di sicurezza pompa.
+  developer: tomgeek27
+  icon: https://raw.githubusercontent.com/tomgeek27/ZimaIrrigator/0237b29a2fe9d6633b3db35a67727e693d3d5141/icon.png
+  tagline:
+    en_US: Automated irrigation, monitored and controlled.
+    it_IT: Irrigazione automatizzata, monitorata e controllata.
+  thumbnail: ""
+  title:
+    en_US: Irrigation System
+    it_IT: Sistema di Irrigazione
+  tips:
+    before_install:
+      en_US: |
+        This app requires an Arduino connected via serial (default /dev/ttyACM0).
+        Change the default database password before installing on a shared network.
+      it_IT: |
+        Questa app richiede un Arduino collegato via seriale (default /dev/ttyACM0).
+        Cambia la password di default del database prima di installare su una rete condivisa.
+  index: /
+  port_map: "5173"
