@@ -3,7 +3,7 @@ import {
   Droplet, Power, RefreshCw,
   FileText, Sliders, Activity, Calendar
 } from 'lucide-react';
-import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
+import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid, ReferenceArea, ReferenceLine } from 'recharts';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined) || '/api';
 
@@ -91,6 +91,15 @@ type PlantsData = Record<string, Plant>;
 type LiveHistoryByPlant = Record<string, HistoryPoint[]>;
 type TimeOption = { label: string; value: string; ms: number };
 
+interface MissingSegment {
+  id: string;
+  startTs: number;
+  endTs: number;
+  startMoisture: number;
+  endMoisture: number;
+  gapMs: number;
+}
+
 const TIME_OPTIONS: TimeOption[] = [
   { label: 'Ultimi 5 min', value: '5m', ms: 5 * 60 * 1000 },
   { label: 'Ultimi 15 min', value: '15m', ms: 15 * 60 * 1000 },
@@ -105,6 +114,20 @@ const TIME_OPTIONS: TimeOption[] = [
 const LIVE_HISTORY_MAX_POINTS = 200;
 const LIVE_FLUSH_INTERVAL_MS = 1000;
 const WS_STALE_THRESHOLD_MS = 15_000;
+const RAW_SAMPLE_INTERVAL_MS = 5000;
+
+const EXPECTED_SAMPLE_INTERVAL_MS: Record<string, number> = {
+  '5m': RAW_SAMPLE_INTERVAL_MS,
+  '15m': RAW_SAMPLE_INTERVAL_MS,
+  '30m': RAW_SAMPLE_INTERVAL_MS,
+  '1h': 60_000,
+  '12h': 60_000,
+  '24h': 60_000,
+  '3d': 15 * 60_000,
+  '7d': 15 * 60_000,
+};
+
+const MISSING_GAP_FACTOR = 2.5;
 
 const EMPTY_STATS: PlantStats = {
   litersDelivered: 0,
@@ -555,6 +578,33 @@ export default function SmartIrrigationDashboard(): React.JSX.Element {
     return [...restHistory, ...liveAfterRest];
   }, [liveHistoryByPlant, selectedPlant, selectedPlantId]);
 
+  const missingSegments = useMemo<MissingSegment[]>(() => {
+    if (chartData.length < 2) return [];
+
+    const expectedInterval = EXPECTED_SAMPLE_INTERVAL_MS[selectedTimeframe] || RAW_SAMPLE_INTERVAL_MS;
+    const missingThresholdMs = Math.max(expectedInterval * MISSING_GAP_FACTOR, expectedInterval + 1);
+    const segments: MissingSegment[] = [];
+
+    for (let i = 1; i < chartData.length; i += 1) {
+      const prev = chartData[i - 1];
+      const curr = chartData[i];
+      const gapMs = curr.timestamp - prev.timestamp;
+
+      if (gapMs > missingThresholdMs) {
+        segments.push({
+          id: `${prev.timestamp}-${curr.timestamp}`,
+          startTs: prev.timestamp,
+          endTs: curr.timestamp,
+          startMoisture: prev.moisture,
+          endMoisture: curr.moisture,
+          gapMs
+        });
+      }
+    }
+
+    return segments;
+  }, [chartData, selectedTimeframe]);
+
   const formatXAxis = useCallback((tickItem: number) => {
     const date = new Date(tickItem);
     if (selectedTimeOption.ms > 24 * 60 * 60 * 1000) {
@@ -860,6 +910,32 @@ export default function SmartIrrigationDashboard(): React.JSX.Element {
                         <YAxis domain={[0, 100]} stroke="#475569" tick={{ fontSize: 9 }} />
                         <Tooltip content={<CustomTooltip />} />
 
+                        {missingSegments.map((segment) => (
+                          <ReferenceArea
+                            key={`gap-band-${segment.id}`}
+                            x1={segment.startTs}
+                            x2={segment.endTs}
+                            y1={0}
+                            y2={100}
+                            fill="#f59e0b"
+                            fillOpacity={0.08}
+                            ifOverflow="extendDomain"
+                          />
+                        ))}
+
+                        {missingSegments.map((segment) => (
+                          <ReferenceLine
+                            key={`gap-line-${segment.id}`}
+                            segment={[
+                              { x: segment.startTs, y: segment.startMoisture },
+                              { x: segment.endTs, y: segment.endMoisture }
+                            ]}
+                            stroke="#f59e0b"
+                            strokeDasharray="6 4"
+                            strokeWidth={2.5}
+                          />
+                        ))}
+
                         <Area
                           type="monotone"
                           dataKey="moisture"
@@ -886,6 +962,11 @@ export default function SmartIrrigationDashboard(): React.JSX.Element {
                 <div className="text-[10px] font-mono text-center text-slate-500">
                   Storico via REST (mount/cambio timeframe) + buffer live WebSocket (max {LIVE_HISTORY_MAX_POINTS} punti, flush 1s).
                 </div>
+                {missingSegments.length > 0 && (
+                  <div className="text-[10px] font-mono text-center text-amber-300/90">
+                    Tratteggio/arancio: intervalli con campioni mancanti nel DB ({missingSegments.length} gap rilevati).
+                  </div>
+                )}
               </div>
 
             </div>

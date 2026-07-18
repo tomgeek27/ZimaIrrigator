@@ -13,10 +13,10 @@ const TIMEFRAME_CONFIG: Record<HistoryTimeframe, HistoryWindowConfig> = {
   '15m': { windowMs: 15 * 60 * 1000, bucket: 'raw' },
   '30m': { windowMs: 30 * 60 * 1000, bucket: 'raw' },
   '1h': { windowMs: 1 * 60 * 60 * 1000, bucket: '1m' },
-  '12h': { windowMs: 12 * 60 * 60 * 1000, bucket: '15m' },
-  '24h': { windowMs: 24 * 60 * 60 * 1000, bucket: '15m' },
-  '3d': { windowMs: 3 * 24 * 60 * 60 * 1000, bucket: '1h' },
-  '7d': { windowMs: 7 * 24 * 60 * 60 * 1000, bucket: '1h' },
+  '12h': { windowMs: 12 * 60 * 60 * 1000, bucket: '1m' },
+  '24h': { windowMs: 24 * 60 * 60 * 1000, bucket: '1m' },
+  '3d': { windowMs: 3 * 24 * 60 * 60 * 1000, bucket: '15m' },
+  '7d': { windowMs: 7 * 24 * 60 * 60 * 1000, bucket: '15m' },
 };
 
 const DEFAULT_TIMEFRAME: HistoryTimeframe = '5m';
